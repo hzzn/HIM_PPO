@@ -54,6 +54,14 @@ ENV_CONFIG = {
     # B_ij: Overflow cost from class i to pool j.
     # 999 = infeasible assignment (not in admissible set)
 
+    "mask" : [
+        [1, 1, 1, 0, 1],  # Class 0 (GeMed)
+        [0, 1, 1, 1, 1],  # Class 1 (Surg)
+        [1, 1, 1, 0, 1],  # Class 2 (Ortho)
+        [1, 1, 1, 1, 0],  # Class 3 (Card)
+        [1, 1, 1, 0, 1],  # Class 4 (OtMed)
+    ],
+
     "admissible_pools": [
         [0, 1, 2, 4],  # GeMed
         [1, 2, 3, 4],  # Surg
