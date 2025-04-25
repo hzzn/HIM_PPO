@@ -9,9 +9,6 @@ EPS_CLIP = 0.2
 EPOCHS = 10
 BATCH_SIZE = 64
 
-print("branch zzz")
-
-print("hzzn altered")
 
 # 状态维度：时间段 + 每个科室的病人数 + 当前出院人数  # 每个等待病人从科室i分配到科室j
 # ========== Actor ==========
