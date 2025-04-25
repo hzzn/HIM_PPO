@@ -78,7 +78,6 @@ class HospitalEnv(gym.Env):
         self.waiting_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # Waiting count per class
         self.in_service_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # In-service count per class
 
-        return self.state
 
     def step(self, action_prob):
         """
@@ -93,14 +92,14 @@ class HospitalEnv(gym.Env):
         # Simulate Poisson arrivals and Binomial discharges
         prob = self.simulate_exogenous_events()
 
+        return self.state, cost, action
 
-        return self.state, cost, action, prob
-
-    def simulated_action(self, action_prob):
+    def simulated_action(self, logits):
         # 计算溢出患者数
         self.overflow = torch.max(self.X_j - self.N_j, torch.zeros_like(self.X_j))
         # 初始化动作矩阵（每个病房的患者分配）
         action = torch.zeros(self.num_pools, self.num_pools, dtype=torch.int)
+        action_prob = F.softmax(logits, dim=-1)  # 计算动作概率
         # 判断并重新采样直到可行
         for i in range(self.J):
             num_patients = self.overflow[i]
@@ -239,6 +238,8 @@ class HospitalEnv(gym.Env):
         self.X_j = x_new
         self.Y_j = y_new
         self.epoch_index_today = h_new
+
+        transition_prob = 0
 
         return transition_prob
 

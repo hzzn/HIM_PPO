@@ -33,8 +33,7 @@ class Actor(nn.Module):
         x = torch.relu(self.fc1(state_input))  # 经过第一个隐藏层
         logits = self.output_layers[epoch_index](x)  # 选择对应时间步的输出层
         logits = logits.view(-1, self.J, self.J).masked_fill(self.mask == 0, value=-1e9)  # 无效动作的logits设为一个很小的负值
-        probabilities = F.softmax(logits, dim=-1)  # 每一行归一化为概率
-        return probabilities # 输出形状为 batch_size x J x J
+        return logits # 输出形状为 batch_size x J x J
 
 
 
@@ -77,6 +76,15 @@ class Critic(nn.Module):
         return value # 输出形状为 batch_size x J x J
 
     class LinearCritic(nn.Module):
-        pass
+        def __init__(self,state_dim, use_bias=True):
+            super()._init_()
+            self.linear = nn.linear(state_dim,1,bias=use_bias)
+
+        def forward(self, state):
+            """
+            state: tensor of shape (batch_size, state_dim)
+            return: tensor of shape (batch_size,)
+            """
+            return self.linear(state).squeeze(-1)
 
 

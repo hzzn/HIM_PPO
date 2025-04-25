@@ -2,139 +2,122 @@ import torch
 from torch.functional import F
 from tqdm import tqdm
 
-def compute_advantage(crictic, states, rewards, next_states, gamma):
-    values = crictic(states)
-    next_values = crictic(next_states)
-    returns = rewards + gamma * next_values
-    advantages = returns - values
-    return advantages.detach(), values, returns
+def compute_advantage(critic, states, rewards, next_states, gamma):
+    with torch.no_grad():
+        values = critic(states)           # v(s)
+        next_values = critic(next_states) # v(s')
+        advantages = rewards - gamma + next_values - values
+        returns = advantages + values     # = g - gamma + v(s')
+    return advantages.detach(), values.detach(), returns.detach()
 
-def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, gamma=0.99, clip_ratio=0.2, batch_size=32):
-    states, actions, old_probs, rewards, next_states, f = memory
+def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config):
+    states, actions, old_log_probs, costs, next_states = memory
+    batch_size = config.get("batch_size", 64)
+    update_iters = config["num_epoch"]
+    clip_ratio = config["Clipping parameter"]
+    gamma = costs.mean().item()
 
+    # Step 1: update critic
+    for _ in range(update_iters):
+        for i in range(0, len(states), batch_size):
+            s = states[i:i + batch_size]
+            s_prime = next_states[i:i + batch_size]
+            g = costs[i:i + batch_size]
+            v_s = critic(s)
+            v_s_prime = critic(s_prime)
+            pred = v_s - v_s_prime
+            target = g - gamma
+            critic_loss = F.mse_loss(pred, target)
+            optimizer_critic.zero_grad()
+            critic_loss.backward()
+            optimizer_critic.step()
+
+    # Step 2: compute advantage
+    advantages, _, _ = compute_advantage(critic, states, costs, next_states, gamma)
+
+    # Step 3: update actor
     total_batches = (len(states) + batch_size - 1) // batch_size
-    for i in tqdm(range(0, len(states), batch_size), total=total_batches, desc="PPO Update"):
+    for i in range(0, len(states), batch_size):
         batch_slice = slice(i, i + batch_size)
-        batch_states = states[batch_slice]
-        batch_actions = actions[batch_slice]
-        batch_old_probs = old_probs[batch_slice]
-        batch_rewards = rewards[batch_slice]
-        batch_f = f[batch_slice]
-        batch_next_states = next_states[batch_slice]
-        batch_advantages, batch_values, batch_returns = compute_advantage(
-            critic, batch_states, batch_rewards, batch_next_states, gamma
-        )
-
-        # Actor loss
-        dist = F.softmax(actor(batch_states), dim=-1)
-        new_probs = torch.gather(dist, index=batch_actions.unsqueeze(2), dim=2).squeeze(2)
-        batch_old_probs = torch.gather(batch_old_probs, index=batch_actions.unsqueeze(2), dim=2).squeeze(2)
-        eps = 1e-10
-        log_new_probs = torch.log(new_probs+eps)
-        log_old_probs = torch.log(batch_old_probs+eps)
-
-        ratios = torch.sum((log_new_probs - log_old_probs) * batch_f, dim=-1)
-        ratios = torch.exp(ratios)
-
-        surr1 = ratios * batch_advantages
-        surr2 = torch.clamp(ratios, 1 - clip_ratio, 1 + clip_ratio) * batch_advantages
+        s = states[batch_slice]
+        f = actions[batch_slice]
+        logp_old = old_log_probs[batch_slice]
+        adv = advantages[batch_slice]
+        logits = actor(s).view_as(f)
+        logp_new = F.log_softmax(logits, dim=-1)
+        log_ratio = ((logp_new - logp_old) * f).sum(dim=(1, 2))
+        ratio = torch.exp(log_ratio)
+        surr1 = ratio * adv
+        surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * adv
         actor_loss = -torch.min(surr1, surr2).mean()
-
-        # Critic loss
-        critic_loss = F.mse_loss(batch_values, batch_returns)
-
-        # 更新
         optimizer_actor.zero_grad()
-        actor_loss.backward(retain_graph=True)
+        actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
-
-        # 检查梯度是否为NaN
         for name, param in actor.named_parameters():
             if param.grad is not None and torch.isnan(param.grad).any():
                 print(f"⚠️ NaN detected in gradient of {name}")
                 break
-
         optimizer_actor.step()
 
-        optimizer_critic.zero_grad()
-        critic_loss.backward()
-        optimizer_critic.step()
 
-def mlp_sample(env, actor, max_steps=100, is_random=False):
+
+def mlp_sample(env, actor,config,  is_random=False):
+    """
+    Collect a trajectory by running actor in the environment.
+
+    Args:
+        env: environment with .reset() and .step(logits)
+        actor: actor network (state -> logits)
+        max_steps: number of transitions to collect
+        is_random: whether to randomize the environment initial state
+
+    Returns:
+        trajectory: list of dicts with keys:
+            - state (Tensor)
+            - action (Tensor)
+            - probs (Tensor or log_probs)
+            - reward (float)
+            - next_state (Tensor)
+            - f (raw atomic action matrix)
+    """
     trajectory = []
-    state = env.reset(is_random)
-    
-    for t in range(max_steps):
+    state = env.reset(is_random)  # Tensor, shape = (state_dim,)
+    max_days = config["Simulation_days"]
+    for t in range(max_days):
+        state_tensor = state.float().unsqueeze(0)  # shape: (1, state_dim)
         with torch.no_grad():
-            logits = actor(state.float()).view(env.J, env.J)
-            next_state, reward, probs, action, f = env.step(logits)
-            
+            logits = actor(state_tensor).view(env.J, env.J)  # raw logits for each atomic decision
+
+        # env.step: accepts logits, internally samples action and returns next_state, reward, etc.
+        next_state, cost, action = env.step(action_prob)
+
+
         trajectory.append({
-            'state': state,
-            'action': action,
-            'probs': probs,
-            'reward': reward,
-            'f': f,
-            'next_state': next_state
+            'state': state,               # shape: (state_dim,)
+            'logits': logits,    # shape: (J, J)
+            'action': action,             # e.g. selected indices or tensor actions
+            'cost': cost,             # scalar
+            'next_state': next_state      # shape: (state_dim,)
         })
 
         state = next_state
 
     return trajectory
 
-def rnn_sample(env, actor, max_steps=100, is_random=False):
-    trajectory = []
-    state = env.reset(is_random)
-    h_prev = actor.init_hidden_states()
-    
-    for t in range(max_steps):
-        with torch.no_grad():
-            logits, h_prev  = actor(state.float(), h_prev)
-            next_state, reward, probs, action, f = env.step(logits.squeeze(0))
-            
-        trajectory.append({
-            'state': state,
-            'action': action,
-            'probs': probs,
-            'reward': reward,
-            'f': f,
-            'next_state': next_state
-        })
-
-        state = next_state
-
-    return trajectory
-
-
-def arrival_rate_5(t, index):
-    assert t >= 0 and t <= 23 and index >= 0 and index <= 4
-    if index == 0:
-        if t >= 0 and t < 12: return 9 / 12
-        else: return 5 / 12
-    elif index == 1:
-        if t >= 0 and t < 12: return 5 / 12
-        else: return 9 / 12
-    else: return 7 / 12
-
-def discharge_probability_5(t, index):
-    assert t >= 0 and t <= 23 and index >= 0 and index <= 4
-    if index == 0:
-        if t >= 13 and t <= 18: return 0.5 * (t - 12) / 3 
-        else: return 0
-    else:
-        if t >= 7 and t <= 18: return 0.25 * (t - 7) / 3
-        else: return 0
 
 
 
 
-def main(env, actor, critic, optimizer_actor, optimizer_crictic, trajectory, gamma=0.99, clip_ratio=0.2, train_epochs=5, batch_size=32):
-        states = torch.tensor([t['state'] for t in trajectory], dtype=torch.float32)
-        actions = [t['action'] for t in trajectory] 
-        rewards = [t['reward'] for t in trajectory]
-        next_states = torch.tensor([t['next_state'] for t in trajectory], dtype=torch.float32)
-        f = [t['f'] for t in trajectory]
-        old_probs = [t['probs'] for t in trajectory]
-        memory = states, actions, old_probs, rewards, next_states, f
-        ppo_update(actor, critic, memory, optimizer_actor, optimizer_crictic, gamma, clip_ratio, batch_size)
+def main(env, actor, critic, optimizer_actor, optimizer_critic, trajectory, config):
+    states = torch.stack([t['state'] for t in trajectory]).float()
+    actions = torch.stack([t['action'] for t in trajectory]).float()
+    costs = torch.tensor([t['cost'] for t in trajectory], dtype=torch.float32)
+    next_states = torch.stack([t['next_state'] for t in trajectory]).float()
+
+    # Recompute log_probs using current logits for compatibility with PPO update
+    logits = torch.stack([t['logits'] for t in trajectory]).float()
+    old_probs = F.log_softmax(logits, dim=-1)
+
+    memory = (states, actions, old_probs, costs, next_states)
+    ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
 
