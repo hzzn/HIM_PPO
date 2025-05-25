@@ -6,15 +6,17 @@ def compute_advantage(critic, states, rewards, next_states, gamma):
     with torch.no_grad():
         values = critic(states)           # v(s)
         next_values = critic(next_states) # v(s')
+        
         advantages = rewards - gamma + next_values - values
         returns = advantages + values     # = g - gamma + v(s')
+
     return advantages.detach(), values.detach(), returns.detach()
 
 def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config):
     states, actions, old_log_probs, costs, next_states = memory
     batch_size = config.get("batch_size", 64)
     update_iters = config["num_epoch"]
-    clip_ratio = config["Clipping parameter"]
+    clip_ratio = config["Clipping_parameter"]
     gamma = costs.mean().item()
 
     # Step 1: update critic
@@ -25,8 +27,8 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
             g = costs[i:i + batch_size]
             v_s = critic(s)
             v_s_prime = critic(s_prime)
-            pred = v_s - v_s_prime
-            target = g - gamma
+            pred = v_s
+            target = g - gamma + - v_s_prime
             critic_loss = F.mse_loss(pred, target)
             optimizer_critic.zero_grad()
             critic_loss.backward()
@@ -52,10 +54,11 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         actor_loss = -torch.min(surr1, surr2).mean()
         optimizer_actor.zero_grad()
         actor_loss.backward()
+
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
         for name, param in actor.named_parameters():
             if param.grad is not None and torch.isnan(param.grad).any():
-                print(f"⚠️ NaN detected in gradient of {name}")
+                print(f"NaN detected in gradient of {name}")
                 break
         optimizer_actor.step()
 
@@ -89,7 +92,7 @@ def mlp_sample(env, actor,config,  is_random=False):
             logits = actor(state_tensor).view(env.J, env.J)  # raw logits for each atomic decision
 
         # env.step: accepts logits, internally samples action and returns next_state, reward, etc.
-        next_state, cost, action = env.step(action_prob)
+        next_state, cost, action = env.step(logits)
 
 
         trajectory.append({
@@ -103,9 +106,6 @@ def mlp_sample(env, actor,config,  is_random=False):
         state = next_state
 
     return trajectory
-
-
-
 
 
 def main(env, actor, critic, optimizer_actor, optimizer_critic, trajectory, config):

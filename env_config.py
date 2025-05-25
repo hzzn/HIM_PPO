@@ -12,12 +12,12 @@ ENV_CONFIG = {
     # J: Number of inpatient service pools (hospital wards).
     # Each pool corresponds to a specialty: [GeMed, Surg, Ortho, Card, OtMed]
 
-    "num_servers": [60, 64, 67, 62, 62],
+    "num_servers": [60, 64, 67, 62, 62], # 参照p41 : The number of servers per pool  is (N1, . . . , N5) =  (60, 64, 67, 62, 62);
     # N_j: Number of beds (servers) in each pool j.
 
     # === Patient arrival configuration ===
 
-    "arrival_rate_hourly": [
+    "arrival_rate_hourly": [ # 参照论文p41-figure 8
         [0.75]*12 + [0.41]*12,  # pool 0 (GeMed)
         [0.41]*12 + [0.74]*12,  # pool 1 (Surg)
         [0.59]*24,              # pool 2 (Ortho)
@@ -27,13 +27,16 @@ ENV_CONFIG = {
 
     # === Discharge configuration ===
 
-    "discharge_rate_hourly": [
-        [0.0]*12 + [0.16]*7 + [0.0]*5,  # pool 0 (GeMed)
-        [0.0]*5 + [0.8]*13 + [0.0]*6,   # pool 1 (Surg)
-        [0.0]*5 + [0.8]*13 + [0.0]*6,   # pool 2 (Ortho)
-        [0.0]*5 + [0.8]*13 + [0.0]*6,   # pool 3 (Card)
-        [0.0]*5 + [0.8]*13 + [0.0]*6    # pool 4 (OtMed)
-    ],
+    "discharge_rate_hourly": [ # 参照论文p41-figure 8
+        [0.0]*12 + [0.16]*5 + [0.2] + [0.0]*6,  # pool 0 (GeMed)
+        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 1 (Surg)
+        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 2 (Ortho)
+        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 3 (Card)
+        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6    # pool 4 (OtMed)
+    ], 
+
+    "discharge_rate_daily": [0.25, 0.25, 0.25, 0.25, 0.25], # 床数为315, 日到达率为70, 名义占用率为0.889, 
+                                                            # 计算得日出院率应为0.25, 参照论文p23-table 2
 
     "num_epochs_per_day": 8,
     # m: Number of decision epochs per day.
@@ -77,7 +80,7 @@ ENV_CONFIG = {
     # Random seed for reproducibility
 
     # === training parameter ===
-    "Simulation days": 10000,
+    "Simulation_days": 100,
     # Simulation days per actor.
 
     "num_actor": 5,
@@ -86,9 +89,9 @@ ENV_CONFIG = {
     "num_epoch": 15,
     #Number of training epochs
 
-    "Clipping parameter": 0.5,
+    "Clipping_parameter": 0.5,
 
-    "Gap Tol": 0.1,
+    "Gap_Tol": 0.1,
 
 
 }
