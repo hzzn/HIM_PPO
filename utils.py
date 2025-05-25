@@ -15,31 +15,29 @@ def compute_advantage(critic, states, rewards, next_states, gamma):
 def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config):
     states, actions, old_log_probs, costs, next_states = memory
     batch_size = config.get("batch_size", 64)
-    update_iters = config["num_epoch"]
     clip_ratio = config["Clipping_parameter"]
     gamma = costs.mean().item()
 
     # Step 1: update critic
-    for _ in range(update_iters):
-        for i in range(0, len(states), batch_size):
-            s = states[i:i + batch_size]
-            s_prime = next_states[i:i + batch_size]
-            g = costs[i:i + batch_size]
-            v_s = critic(s)
-            v_s_prime = critic(s_prime)
-            pred = v_s
-            target = g - gamma + - v_s_prime
-            critic_loss = F.mse_loss(pred, target)
-            optimizer_critic.zero_grad()
-            critic_loss.backward()
-            optimizer_critic.step()
+    for i in tqdm(range(0, len(states), batch_size), desc="Critic Update", leave=False):
+        s = states[i:i + batch_size]
+        s_prime = next_states[i:i + batch_size]
+        g = costs[i:i + batch_size]
+        v_s = critic(s)
+        v_s_prime = critic(s_prime)
+        pred = v_s
+        target = g - gamma + - v_s_prime
+        critic_loss = F.mse_loss(pred, target)
+        optimizer_critic.zero_grad()
+        critic_loss.backward()
+        optimizer_critic.step()
 
     # Step 2: compute advantage
     advantages, _, _ = compute_advantage(critic, states, costs, next_states, gamma)
 
     # Step 3: update actor
     total_batches = (len(states) + batch_size - 1) // batch_size
-    for i in range(0, len(states), batch_size):
+    for i in tqdm(range(0, len(states), batch_size), desc="Actor Updates", leave=False):
         batch_slice = slice(i, i + batch_size)
         s = states[batch_slice]
         f = actions[batch_slice]
@@ -56,15 +54,9 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         actor_loss.backward()
 
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
-        for name, param in actor.named_parameters():
-            if param.grad is not None and torch.isnan(param.grad).any():
-                print(f"NaN detected in gradient of {name}")
-                break
         optimizer_actor.step()
 
-
-
-def mlp_sample(env, actor,config,  is_random=False):
+def mlp_sample(env, actor, config,  is_random=False):
     """
     Collect a trajectory by running actor in the environment.
 
@@ -86,7 +78,10 @@ def mlp_sample(env, actor,config,  is_random=False):
     trajectory = []
     state = env.reset(is_random)  # Tensor, shape = (state_dim,)
     max_days = config["Simulation_days"]
-    for t in range(max_days):
+    num_epochs_per_day = config["num_epochs_per_day"]
+    total_iters = max_days * num_epochs_per_day
+
+    for _ in tqdm(range(total_iters), desc="Sample"):
         state_tensor = state.float().unsqueeze(0)  # shape: (1, state_dim)
         with torch.no_grad():
             logits = actor(state_tensor).view(env.J, env.J)  # raw logits for each atomic decision

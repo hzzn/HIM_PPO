@@ -12,12 +12,12 @@ ENV_CONFIG = {
     # J: Number of inpatient service pools (hospital wards).
     # Each pool corresponds to a specialty: [GeMed, Surg, Ortho, Card, OtMed]
 
-    "num_servers": [60, 64, 67, 62, 62], # 参照p41 : The number of servers per pool  is (N1, . . . , N5) =  (60, 64, 67, 62, 62);
+    "num_servers": [60, 64, 67, 62, 62], # 参照p41 : The number of servers per pool  is (N1,..., N5) =  (60, 64, 67, 62, 62);
     # N_j: Number of beds (servers) in each pool j.
 
     # === Patient arrival configuration ===
 
-    "arrival_rate_hourly": [ # 参照论文p41-figure 8
+    "arrival_rate_hourly": [ # 参照论文p41-figure 8(a)
         [0.75]*12 + [0.41]*12,  # pool 0 (GeMed)
         [0.41]*12 + [0.74]*12,  # pool 1 (Surg)
         [0.59]*24,              # pool 2 (Ortho)
@@ -27,7 +27,7 @@ ENV_CONFIG = {
 
     # === Discharge configuration ===
 
-    "discharge_rate_hourly": [ # 参照论文p41-figure 8
+    "discharge_rate_hourly": [ # 参照论文p41-figure 8(b)
         [0.0]*12 + [0.16]*5 + [0.2] + [0.0]*6,  # pool 0 (GeMed)
         [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 1 (Surg)
         [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 2 (Ortho)
