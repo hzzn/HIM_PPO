@@ -95,6 +95,23 @@ class HospitalEnv(gym.Env):
         prob = self.simulate_exogenous_events()
 
         return self.state, cost, action
+    
+    def overflow_step(self):
+        self.post_state = self.state.clone()
+        self.overflow = torch.clamp(self.X_j - self.N_j, min=0)
+        # 初始化动作矩阵（每个病房的患者分配）
+        action = torch.zeros(self.num_pools, self.num_pools, dtype=torch.int)
+        for i in range(self.J):
+            num_patients = self.overflow[i]
+            for _ in range(num_patients):
+               print() 
+        self.compute_post_action_state(action)
+        cost = self.compute_cost(action)
+
+        # Simulate Poisson arrivals and Binomial discharges
+        prob = self.simulate_exogenous_events()
+
+        return self.state, cost, action
 
     def simulated_action(self, logits):
         # 计算溢出患者数
@@ -109,9 +126,9 @@ class HospitalEnv(gym.Env):
             for _ in range(num_patients):
                 num_resample = 0 # 记录重采样次数, 为重采样次数设定阈值, 防止陷入死循环
                 while True:  # 重复采样直到得到可行的分配
-                    if num_resample == 5:
+                    if num_resample >= 5:
                         action[i, i] += 1
-                        self.X_j[target] += 1
+                        self.X_j[i] += 1
                         break     
 
                     target = dist.sample()  # 采样
@@ -133,25 +150,23 @@ class HospitalEnv(gym.Env):
         :return: post-action 状态
         """
 
-        x = self.state[:self.J] - self.overflow
-        y = self.state[self.J:2 * self.J]
+        self.X_j = self.X_j - self.overflow
         t = self.state[-1:]
 
-        self.post_state = torch.cat([x, y, t])
+        self.post_state = torch.cat([self.X_j, self.Y_j, t])
 
         return self.post_state
 
 
-    def compute_cost(self,action):
+    def compute_cost(self, action):
         """
         :param post_state: shape = (2J + 1,) -> [x+, y, t+1]
         :param action: shape = (J, J), 表示 overflow 分配
         :return: float scalar cost
         """
-        x_post = self.post_state[:self.J]  # 应用动作后的 x+
 
         # 1. holding cost: max(x_j^+ - N_j, 0)
-        q_post = torch.clamp(x_post - self.N_j, min=0)
+        q_post = torch.clamp(self.X_j - self.N_j, min=0)
         holding = torch.sum(self.holding_cost * q_post)
 
         # 2. overflow cost: sum_{i,j} B_{i,j} * f_{i,j}
@@ -161,8 +176,6 @@ class HospitalEnv(gym.Env):
 
     def simulate_exogenous_events(self):
 
-        x = self.post_state[:self.J]
-        y = self.post_state[self.J : 2 * self.J]
         h = int(self.post_state[-1].item())
 
         # 判断是否为午夜（h == 0）
@@ -183,42 +196,41 @@ class HospitalEnv(gym.Env):
             # bj: 计划出院（每日）
             bj = torch.zeros(self.J, dtype=torch.int)
             for j in range(self.J):
-                cap = min(x[j], self.N_j[j])  # 当前病房真实容量下的患者数
+                cap = min(self.X_j[j], self.N_j[j])  # 当前病房真实容量下的患者数
                 bj[j] = torch.distributions.Binomial(
                     total_count=cap, probs=self.daily_discharge_rate[j]
                 ).sample().int()
 
-            x_new = x + aj  # 到达患者加入
-            y_new = bj  # 设置当天需要出院的患者
-            h_new = torch.tensor([1])
-            self.day_count += 1  # 新的一天开始
+            self.X_j = self.X_j + aj  # 到达患者加入
+            self.Y_j = bj  # 设置当天需要出院的患者
 
         else:
             # ======== 非午夜更新逻辑 ======== 参照p33 B.1.
             dj = torch.zeros(self.J, dtype=torch.int)
             for j in range(self.J):
-
-                if y[j] > 0:
-                    probs = (self.discharge_cdf[h] - self.discharge_cdf[h-1]) / (1 - self.discharge_cdf[h-1]) # 参照p33 B.1.
+                if self.Y_j[j] > 0:
+                    eps = 1e-10
+                    F_h = self.discharge_cdf[j][3*h]
+                    F_h_prime = self.discharge_cdf[j][3*(h-1)]
+                    probs = (F_h - F_h_prime + eps) / (1 - F_h_prime + eps) # 参照p33 B.1.
                     out = torch.distributions.Binomial(
-                        total_count=y[j], probs=torch.tensor(probs)
+                        total_count=self.Y_j[j], probs=probs
                     ).sample().int() # 参照p33 B.1.
+                    
+                    dj[j] += out
 
-                    dj[j] = out
+            self.X_j = self.X_j + aj - dj
+            self.Y_j = self.Y_j - dj
 
-            x_new = x + aj - dj
-            y_new = y - dj
+        # 时间更新
+        h = (h + 1) % self.num_epochs_per_day
 
-            # 时间更新
-            h = (h + 1) % self.num_epochs_per_day
-
-            if h == 0:
-                self.day_count += 1  # 每日递增
+        if h == 0:
+            self.day_count += 1  # 每日递增
 
         # 拼接新的状态
-        self.state = torch.cat([x_new, y_new, torch.tensor([h])])
-        self.X_j = x_new
-        self.Y_j = y_new
+        self.state = torch.cat([self.X_j, self.Y_j, torch.tensor([h])])
+
         self.epoch_index_today = h
 
         transition_prob = 0

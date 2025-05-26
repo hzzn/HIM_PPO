@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import torch.nn.init as init
 
 
 
@@ -19,7 +20,7 @@ class Actor(nn.Module):
         self.fc1 = nn.Linear(self.state_dim, self.hidden_dim)
         self.output_layers = nn.ModuleList([nn.Linear(self.hidden_dim, self.action_dim) for _ in range(self.m)])
         self.reset_parameters()
-
+        self.loss = []
     def reset_parameters(self):
         # 使用 Kaiming 初始化，适用于 ReLU 激活
         nn.init.kaiming_normal_(self.fc1.weight, nonlinearity='relu')
@@ -51,7 +52,7 @@ class Critic(nn.Module):
         # 共享的隐藏层
         self.fc1 = nn.Linear(self.state_dim, self.hidden_dim)
         self.output_layers = nn.ModuleList([nn.Linear(self.hidden_dim, self.reward_dim) for _ in range(self.m)])
-
+        
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -82,7 +83,10 @@ class LinearCritic(nn.Module):
         super().__init__()
         state_dim = 2 * config["num_pools"] + 1
         self.linear = nn.Linear(state_dim, 1, bias=use_bias)
-
+        self.loss = []
+        init.kaiming_uniform_(self.linear.weight, a=0.01, mode='fan_in', nonlinearity='linear')
+        if use_bias:
+            init.constant_(self.linear.bias, 0.0)
     def forward(self, state):
         """
         state: tensor of shape (batch_size, state_dim)
