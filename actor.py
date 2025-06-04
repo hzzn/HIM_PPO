@@ -44,7 +44,7 @@ class Actor_GRU(nn.Module):
         self.state_dim = 2 * self.J
         self.action_dim = self.J * self.J
         self.hidden_dim = 64
-        self.mask = torch.tensor(config["mask"], dtype=torch.int)
+        self.register_buffer('mask', torch.tensor(config["mask"], dtype=torch.int).view(self.J, self.J))
 
         self.gru = nn.GRUCell(self.state_dim, self.hidden_dim)
         self.output_layer = nn.Linear(self.hidden_dim, self.action_dim)

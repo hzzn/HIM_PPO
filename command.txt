@@ -1,0 +1,2 @@
+python dis_run.py
+docker run -it --gpus all --cpus=4 --shm-size=10.21gb --name my_ray_container your_ray_image:latest /bin/bash

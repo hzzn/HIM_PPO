@@ -24,8 +24,16 @@ def compute_gae_adv(critic, states, next_states, rewards, gamma=0.99, lam=0.95):
     return torch.tensor(advantages)
 
 def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config):
+    device = next(actor.parameters()).device
     states, actions, old_log_probs, costs, next_states = memory
-    rewards = torch.tensor([-c for c in costs])
+    # 将所有数据从 CPU 传输到 GPU
+    states = states.to(device)
+    actions = actions.to(device)
+    old_log_probs = old_log_probs.to(device)
+    costs = costs.to(device) # 将 costs 也移到设备上
+    next_states = next_states.to(device)
+
+    rewards = -costs
     batch_size = config.get("batch_size", 64)
     gm = config.get("gamma", 0.99)
     lam = config.get("lam", 0.95)
@@ -33,7 +41,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
     # gamma = costs.mean().item()
 
     # Step 1: update critic
-
+    
     for i in tqdm(range(0, len(states), batch_size), desc="Critic Update", leave=False):
         #1. Critic Update
         batch_slice = slice(i, i + batch_size)
@@ -45,7 +53,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
 
         v_s = critic(s)
         # v_s_prime = critic(s_prime)
-        adv  = compute_gae_adv(critic, s, next_s, r, gm, lam)
+        adv  = compute_gae_adv(critic, s, next_s, r, gm, lam).to(device)
 
         # target = g - gamma + - v_s_prime
         target = adv + v_s.detach() # detach 是关键，防止反向图混乱
@@ -65,9 +73,9 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
     # Step 3: update actor
     # total_batches = (len(states) + batch_size - 1) // batch_size
 
-    advantages = compute_gae_adv(critic, states, next_states, rewards, gm, lam)
+    advantages = compute_gae_adv(critic, states, next_states, rewards, gm, lam).to(device)
     for i in tqdm(range(0, len(states), batch_size), desc="Actor Updates", leave=False):
-        h_actor = torch.zeros(actor.hidden_dim)
+        h_actor = None
         batch_slice = slice(i, i + batch_size)
         s = states[batch_slice]
         f = actions[batch_slice]
@@ -120,10 +128,10 @@ def mlp_sample(env, actor, config,  is_random=False):
     max_days = config["Simulation_days"]
     num_epochs_per_day = config["num_epochs_per_day"]
     total_iters = max_days * num_epochs_per_day
-
+    actor_device = next(actor.parameters()).device
     h_actor = None
     for i in tqdm(range(total_iters), desc="Sample"):
-        state_tensor = state.float().unsqueeze(0)  # shape: (1, state_dim)
+        state_tensor = state.float().unsqueeze(0).to(actor_device)  # shape: (1, state_dim)
         with torch.no_grad():
             if hasattr(actor, "gru"):
                 if i % 64 == 0:
@@ -134,7 +142,7 @@ def mlp_sample(env, actor, config,  is_random=False):
                 logits = actor(state_tensor).view(env.J, env.J)  # raw logits for each atomic decision
 
         # env.step: accepts logits, internally samples action and returns next_state, reward, etc.
-        next_state, cost, action = env.step(logits)
+        next_state, cost, action = env.step(logits.cpu())
 
 
         trajectory.append({
