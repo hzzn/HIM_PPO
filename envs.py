@@ -18,7 +18,7 @@ class HospitalEnv(gym.Env):
         # === Server configuration ===
         self.N_j = torch.tensor(config["num_servers"],
                                                  dtype=torch.int)  # N_j: Number of beds per pool
-
+        self.priority = torch.tensor(config["overflow_priority"], dtype=torch.int) # overflow优先级, overflow_cost=30时为1, 35为2
         # === Hourly arrival and discharge rates ===
         self.hourly_arrival_rate = torch.tensor(config["arrival_rate_hourly"], dtype=torch.float)  # λ_j(t)
         self.daily_arrival_rate = torch.sum(self.hourly_arrival_rate, dim=1)  # Λ_j: Total arrival per day
@@ -70,7 +70,8 @@ class HospitalEnv(gym.Env):
         self.day_count = 0  # t = 0
         self.epoch_index_today = 0  # h(t) = 0
         if is_random:
-            self.X_j = torch.cat([torch.randint(2*n//3, n+1, (1,)) for n in self.N_j])
+            # self.X_j = torch.cat([torch.randint(2*n//3, n+1, (1,)) for n in self.N_j])
+            self.X_j = torch.tensor([2 * n // 3 for n in self.N_j])
         else:
             self.X_j = torch.zeros(self.num_pools, dtype=torch.int)  # X_j: current number of customers in pool j
         self.Y_j = torch.zeros(self.num_pools, dtype=torch.int)  # Y_j: number of patients to be discharged today in each pool
@@ -97,19 +98,36 @@ class HospitalEnv(gym.Env):
         return self.state, cost, action
     
     def overflow_step(self):
-        self.post_state = self.state.clone()
+        # rule-based policy: completely overflow 
         self.overflow = torch.clamp(self.X_j - self.N_j, min=0)
+        
+        cap = torch.clamp(self.N_j - self.X_j, min=0)
         # 初始化动作矩阵（每个病房的患者分配）
         action = torch.zeros(self.num_pools, self.num_pools, dtype=torch.int)
         for i in range(self.J):
+            # 找到该科室可以overflow的科室, 并按优先级排序
             num_patients = self.overflow[i]
+            p_i = self.priority[i]
+            target_list = torch.nonzero(p_i > 0, as_tuple=True)[0]
+            p_i = p_i[target_list]
+            target_list = target_list[torch.argsort(p_i)]
+            target_list = torch.cat([target_list, torch.tensor([i])])
             for _ in range(num_patients):
-               print() 
+                for j in target_list:
+                    if cap[j] > 0:
+                        action[i][j] += 1
+                        self.X_j[i] -= 1
+                        self.X_j[j] += 1
+                        cap[j] -= 1
+                    elif j == i:
+                        action[i][j] += 1
+                        self.X_j[j] += 1
+
         self.compute_post_action_state(action)
         cost = self.compute_cost(action)
 
         # Simulate Poisson arrivals and Binomial discharges
-        prob = self.simulate_exogenous_events()
+        self.simulate_exogenous_events()
 
         return self.state, cost, action
 
@@ -119,8 +137,36 @@ class HospitalEnv(gym.Env):
         # 初始化动作矩阵（每个病房的患者分配）
         action = torch.zeros(self.num_pools, self.num_pools, dtype=torch.int)
         action_prob = F.softmax(logits, dim=-1)  # 计算动作概率
-        # 判断并重新采样直到可行
+        available_capacity = self.N_j - self.X_j # 注意：这里是基于当前 X_j 的
+
         for i in range(self.J):
+            num_patients = self.overflow[i].item() # 获取整数值
+            if num_patients <= 0:
+                continue
+
+            # 1. 一次性采样所有病人的目标
+            dist = Categorical(action_prob[i, :])
+            sampled_targets = dist.sample((num_patients,)) # 一次采样 num_patients 个
+
+            # 2. 遍历采样结果并分配
+            for target in sampled_targets:
+                target_idx = target.item() # 获取整数索引
+
+                # 3. 检查容量并分配
+                # 或者，更简单但可能不完美的做法是：如果目标池 *当前* 有空位，就分配
+                # 一个更优但复杂的做法是优先分配给有空位的，再处理没空位的
+                
+                # 简化版：检查当前临时容量
+                if available_capacity[target_idx] > 0:
+                    action[i, target_idx] += 1
+                    available_capacity[target_idx] -= 1 # 减少可用容量
+                else:
+                    # 回退策略：分配回原类别 i (表示等待)
+                    action[i, i] += 1
+
+        return action
+        # 判断并重新采样直到可行
+        """for i in range(self.J):
             num_patients = self.overflow[i]
             dist = Categorical(action_prob[i, :])  # 创建 Categorical 分布对象
             for _ in range(num_patients):
@@ -140,7 +186,7 @@ class HospitalEnv(gym.Env):
 
                     num_resample += 1
 
-        return action
+        return action"""
 
 
     def compute_post_action_state(self, action):
@@ -150,7 +196,13 @@ class HospitalEnv(gym.Env):
         :return: post-action 状态
         """
 
+        # 1. 移除所有溢出的病人
         self.X_j = self.X_j - self.overflow
+        
+        # 2. 计算每个池子的总流入量（包括等待的病人）
+        inflows = torch.sum(action, dim=0)         
+        # 3. 更新 X_j
+        self.X_j = self.X_j + inflows
         t = self.state[-1:]
 
         self.post_state = torch.cat([self.X_j, self.Y_j, t])
@@ -229,7 +281,12 @@ class HospitalEnv(gym.Env):
             self.day_count += 1  # 每日递增
 
         # 拼接新的状态
-        self.state = torch.cat([self.X_j, self.Y_j, torch.tensor([h])])
+        occupancy_rates = self.X_j / self.N_j
+        # 你也可以归一化Y_j和epoch_idx
+        normalized_Y_j = self.Y_j / self.N_j 
+
+        # 拼接成最终状态
+        self.state = torch.cat([occupancy_rates, normalized_Y_j, torch.tensor([h])], dim=0).float()
 
         self.epoch_index_today = h
 
