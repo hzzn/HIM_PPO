@@ -96,7 +96,7 @@ ENV_CONFIG = {
     "num_epoch": 1,
     #Number of training epochs
 
-    "Clipping_parameter": 0.5,
+    "Clipping_parameter": 0.3,
 
     "Gap_Tol": 0.1,
     
