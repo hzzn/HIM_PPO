@@ -2,26 +2,28 @@ import torch
 from torch.functional import F
 from tqdm import tqdm
 
-def compute_advantage(critic, states, rewards, next_states, gamma):
+def compute_advantage(critic, states, next_states, rewards,  mean_cost):
     with torch.no_grad():
         values = critic(states)           # v(s)
         next_values = critic(next_states) # v(s')
         
-        advantages = rewards - gamma + next_values - values
-        returns = advantages + values     # = g - gamma + v(s')
-
-    return advantages.detach(), values.detach(), returns.detach()
+        advantages = rewards + mean_cost + next_values - values
+        target = rewards + mean_cost + next_values 
+    return advantages, target
 def compute_gae_adv(critic, states, next_states, rewards, gamma=0.99, lam=0.95):
-    advantages = []
-    gae = 0
-    values = critic(states)
-    next_values = critic(next_states)
+    with torch.no_grad():
+        advantages = []
+        gae = 0
+        values = critic(states)
+        next_values = critic(next_states)
 
-    for t in reversed(range(len(rewards))):
-        delta = rewards[t] + gamma * next_values[t] - values[t]
-        gae = delta + gamma * lam * gae
-        advantages.insert(0, gae)
-    return torch.tensor(advantages)
+        for t in reversed(range(len(rewards))):
+            delta = rewards[t] + gamma * next_values[t] - values[t]
+            gae = delta + gamma * lam * gae
+            advantages.insert(0, gae)
+        advantages = torch.tensor(advantages, device=rewards.device)
+        target = advantages + values
+    return advantages, target
 
 def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config):
     device = next(actor.parameters()).device
@@ -38,7 +40,8 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
     gm = config.get("gamma", 0.99)
     lam = config.get("lam", 0.95)
     clip_ratio = config["Clipping_parameter"]
-    # gamma = costs.mean().item()
+    mean_cost = costs.mean().item()
+    is_gae = config.get("is_gae", True)
 
     # Step 1: update critic
     
@@ -48,16 +51,15 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         s = states[batch_slice]
         next_s = next_states[batch_slice]
         r = rewards[batch_slice]
+        c = costs[batch_slice]
 
-        # g = costs[i:i + batch_size]
-
-        v_s = critic(s)
         # v_s_prime = critic(s_prime)
-        adv  = compute_gae_adv(critic, s, next_s, r, gm, lam).to(device)
-
-        # target = g - gamma + - v_s_prime
-        target = adv + v_s.detach() # detach 是关键，防止反向图混乱
+        if is_gae:
+            adv, target  = compute_gae_adv(critic, s, next_s, r, gm, lam).to(device)
+        else:
+            adv, target = compute_advantage(critic, s, next_s, r, mean_cost)        
         
+        v_s = critic(s)
         critic_loss = F.mse_loss(v_s, target)
         
         critic.loss.append(critic_loss)
@@ -68,19 +70,20 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         optimizer_critic.step()
 
     # Step 2: compute advantage
-    # advantages, _, _ = compute_advantage(critic, states, costs, next_states, gamma)
-
+    if is_gae:
+        advantages, _ = compute_gae_adv(critic, states, next_states, rewards, gm, lam).to(device)
+    else:
+        advantages, _ = compute_advantage(critic, states, next_states, rewards, mean_cost)
     # Step 3: update actor
     # total_batches = (len(states) + batch_size - 1) // batch_size
-
-    advantages = compute_gae_adv(critic, states, next_states, rewards, gm, lam).to(device)
+    print(advantages.mean().item(), advantages.std().item(), advantages.min().item(), advantages.max().item())
     for i in tqdm(range(0, len(states), batch_size), desc="Actor Updates", leave=False):
         h_actor = None
         batch_slice = slice(i, i + batch_size)
         s = states[batch_slice]
         f = actions[batch_slice]
         logp_old = old_log_probs[batch_slice]
-        adv = advantages[batch_slice]
+        adv = advantages[batch_slice].detach()
         adv = (adv - adv.mean()) / (adv.std() + 1e-8) # 归一化adv 稳定计算
         if hasattr(actor, "gru"):
             logits, h_actor = actor(s, h_actor)

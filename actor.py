@@ -73,7 +73,6 @@ class Actor_GRU(nn.Module):
         T = states.size(0)
         logits = []
         new_h = h
-
         for t in range(T):
             state_t = states[t][:-1]  # 去掉 epoch index
             if new_h is None:
@@ -128,13 +127,13 @@ class Critic(nn.Module):
 class LinearCritic(nn.Module):
     def __init__(self, config, use_bias=True):
         super().__init__()
-        state_dim = 2 * config["num_pools"]
+        state_dim = 2 * config["num_pools"] + 1
         self.fc1 = nn.Linear(state_dim, 2 * state_dim, bias=use_bias)
         self.fc2 = nn.Linear(2 * state_dim, 1, bias=use_bias)
         self.relu = nn.ReLU()
         self.loss = []
         init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
-        init.kaiming_uniform_(self.fc2.weight, nonlinearity='relu')
+        init.normal_(self.fc2.weight, mean=0., std=0.01)
         if use_bias:
             init.constant_(self.fc1.bias, 0)
             init.constant_(self.fc2.bias, 0)
@@ -143,7 +142,6 @@ class LinearCritic(nn.Module):
         state: tensor of shape (batch_size, state_dim)
         return: tensor of shape (batch_size,)
         """
-        state = state[:, :-1]
         x = self.relu(self.fc1(state))
         return self.fc2(x).squeeze(-1)
 

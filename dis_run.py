@@ -10,6 +10,7 @@ import importlib as imp
 import matplotlib.pyplot as plt # 用于绘图
 from tqdm import tqdm
 import os
+import json
 import ray # 导入 Ray
 
 # 假设这些是你自定义的文件
@@ -37,6 +38,7 @@ class SamplingActor:
         
         if torch.cuda.is_available():
             self.actor_model.cuda() # 将模型移动到这个actor分配到的GPU上
+            self.env.to_gpu()
 
     def sample_trajectory(self, is_random=False):
         # mlp_sample 需要能接受 env, actor_model, config 作为参数
@@ -183,15 +185,25 @@ def main_ppo_training():
             act_loss_mean_epoch.append(avg_actor_loss_iter)
             crtc_loss_mean_epoch.append(avg_critic_loss_iter)
             
-            print(f"  Iter {epoch + 1}: Daily Avg Cost: {avg_cost_iter:.2f}, Critic Loss: {avg_critic_loss_iter:.0f}, Actor Loss: {avg_actor_loss_iter:.3f}")
+            print(f"  Iter {epoch + 1}: Daily Avg Cost: {avg_cost_iter:.2f}, Critic Loss: {avg_critic_loss_iter:.3f}, Actor Loss: {avg_actor_loss_iter:.3f}")
 
         # --- 更新采样 Actors 的权重 ---
         updated_learner_weights_cpu = {k: v.cpu() for k, v in learner_actor.state_dict().items()}
         weight_update_futures = [actor.set_weights.remote(updated_learner_weights_cpu) for actor in sampling_actors]
         ray.get(weight_update_futures) # 确保权重更新完成
-
     # --- 训练结束，关闭 Ray ---
     ray.shutdown()
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%d_%H%M")
+    os.makedirs("results", exist_ok=True)
+    filepath = os.path.join("results", f"results_{timestamp}.json")
+    data_to_save = {
+        "costs_mean_epoch": costs_mean_epoch,
+        "act_loss_mean_epoch": act_loss_mean_epoch,
+        "crtc_loss_mean_epoch": crtc_loss_mean_epoch
+    }
+    with open(filepath, 'w') as f:
+        json.dump(data_to_save, f, indent=4) # indent=4 使 JSON 文件更易读
 
     # --- 绘图 ---
     # 注意：从Ray actor收集的loss需要聚合到主进程中才能绘图

@@ -1,6 +1,4 @@
 import numpy as np
-import gym
-from gym import spaces
 import torch
 
 from torch.distributions import Multinomial, Categorical
@@ -8,7 +6,7 @@ from torch.functional import F
 
 
 
-class HospitalEnv(gym.Env):
+class HospitalEnv():
 
     def __init__(self, config):
         # === Pool structure ===
@@ -283,13 +281,10 @@ class HospitalEnv(gym.Env):
         # 拼接新的状态
         occupancy_rates = self.X_j / self.N_j
         # 你也可以归一化Y_j和epoch_idx
-        normalized_Y_j = self.Y_j / self.N_j 
+        normalized_Y_j = self.Y_j / self.N_j
 
         # 拼接成最终状态
-        self.state = torch.cat([occupancy_rates, normalized_Y_j, torch.tensor([h])], dim=0).float()
+        self.state = torch.cat([occupancy_rates, normalized_Y_j, torch.tensor([h / self.num_epochs_per_day])], dim=0).float()
 
         self.epoch_index_today = h
 
-        transition_prob = 0
-
-        return transition_prob

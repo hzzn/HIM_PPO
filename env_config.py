@@ -87,13 +87,13 @@ ENV_CONFIG = {
     # Random seed for reproducibility
 
     # === training parameter ===
-    "Simulation_days": 10000,
+    "Simulation_days": 1000,
     # Simulation days per actor.
 
-    "num_actor": 5,
+    "num_actor": 1,
     #number of actors
 
-    "num_epoch": 1,
+    "num_epoch": 5,
     #Number of training epochs
 
     "Clipping_parameter": 0.3,
@@ -103,5 +103,6 @@ ENV_CONFIG = {
     "max_norm" : 1,
     "lam" : 0.95,
     "gamma" : 0.99,
+    "is_gae" : False, 
 
 }
