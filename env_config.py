@@ -90,10 +90,10 @@ ENV_CONFIG = {
     "Simulation_days": 1000,
     # Simulation days per actor.
 
-    "num_actor": 1,
+    "num_actor": 5,
     #number of actors
 
-    "num_epoch": 5,
+    "num_epoch": 10,
     #Number of training epochs
 
     "Clipping_parameter": 0.3,

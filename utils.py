@@ -76,7 +76,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         advantages, _ = compute_advantage(critic, states, next_states, rewards, mean_cost)
     # Step 3: update actor
     # total_batches = (len(states) + batch_size - 1) // batch_size
-    print(advantages.mean().item(), advantages.std().item(), advantages.min().item(), advantages.max().item())
+    # print(advantages.mean().item(), advantages.std().item(), advantages.min().item(), advantages.max().item())
     for i in tqdm(range(0, len(states), batch_size), desc="Actor Updates", leave=False):
         h_actor = None
         batch_slice = slice(i, i + batch_size)

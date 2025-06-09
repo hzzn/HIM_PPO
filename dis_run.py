@@ -38,7 +38,6 @@ class SamplingActor:
         
         if torch.cuda.is_available():
             self.actor_model.cuda() # 将模型移动到这个actor分配到的GPU上
-            self.env.to_gpu()
 
     def sample_trajectory(self, is_random=False):
         # mlp_sample 需要能接受 env, actor_model, config 作为参数
@@ -76,7 +75,7 @@ def main_ppo_training():
     learner_critic.to(device)
 
     optimizer_actor = Adam(learner_actor.parameters(), lr=5e-4)
-    optimizer_critic = Adam(learner_critic.parameters(), lr=1e-3)
+    optimizer_critic = Adam(learner_critic.parameters(), lr=1e-4)
     # scheduler_actor = CosineAnnealingLR(optimizer_actor, T_max=epochs * num_iterations_per_epoch, eta_min=1e-4)
 
     # --- 创建采样 Actors ---

@@ -127,7 +127,7 @@ class Critic(nn.Module):
 class LinearCritic(nn.Module):
     def __init__(self, config, use_bias=True):
         super().__init__()
-        state_dim = 2 * config["num_pools"] + 1
+        state_dim = 2 * config["num_pools"]
         self.fc1 = nn.Linear(state_dim, 2 * state_dim, bias=use_bias)
         self.fc2 = nn.Linear(2 * state_dim, 1, bias=use_bias)
         self.relu = nn.ReLU()
@@ -142,7 +142,8 @@ class LinearCritic(nn.Module):
         state: tensor of shape (batch_size, state_dim)
         return: tensor of shape (batch_size,)
         """
-        x = self.relu(self.fc1(state))
+        
+        x = self.relu(self.fc1(state[:, :-1]))
         return self.fc2(x).squeeze(-1)
 
 class Critic_GRU(nn.Module):

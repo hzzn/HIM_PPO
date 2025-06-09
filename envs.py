@@ -201,8 +201,8 @@ class HospitalEnv():
         inflows = torch.sum(action, dim=0)         
         # 3. 更新 X_j
         self.X_j = self.X_j + inflows
-        t = self.state[-1:]
 
+        t = torch.tensor([self.epoch_index_today])
         self.post_state = torch.cat([self.X_j, self.Y_j, t])
 
         return self.post_state
@@ -284,7 +284,7 @@ class HospitalEnv():
         normalized_Y_j = self.Y_j / self.N_j
 
         # 拼接成最终状态
-        self.state = torch.cat([occupancy_rates, normalized_Y_j, torch.tensor([h / self.num_epochs_per_day])], dim=0).float()
+        self.state = torch.cat([occupancy_rates, normalized_Y_j, torch.tensor([h])], dim=0).float()
 
         self.epoch_index_today = h
 
