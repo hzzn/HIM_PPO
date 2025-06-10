@@ -1,8 +1,8 @@
 import numpy as np
 import torch
-
 from torch.distributions import Multinomial, Categorical
 from torch.functional import F
+import math
 
 
 
@@ -16,6 +16,9 @@ class HospitalEnv():
         # === Server configuration ===
         self.N_j = torch.tensor(config["num_servers"],
                                                  dtype=torch.int)  # N_j: Number of beds per pool
+        max_overall_N_j = torch.max(self.N_j).float()
+        self.normalized_N_j = self.N_j.float() / max_overall_N_j.float() # 确保 N_j 和 max_overall_N_j 都是浮点数
+
         self.priority = torch.tensor(config["overflow_priority"], dtype=torch.int) # overflow优先级, overflow_cost=30时为1, 35为2
         # === Hourly arrival and discharge rates ===
         self.hourly_arrival_rate = torch.tensor(config["arrival_rate_hourly"], dtype=torch.float)  # λ_j(t)
@@ -73,7 +76,9 @@ class HospitalEnv():
         else:
             self.X_j = torch.zeros(self.num_pools, dtype=torch.int)  # X_j: current number of customers in pool j
         self.Y_j = torch.zeros(self.num_pools, dtype=torch.int)  # Y_j: number of patients to be discharged today in each pool
-        self.state = torch.cat([self.X_j, self.Y_j, torch.tensor([self.epoch_index_today])], dim=0)
+        sin, cos = self.encode_time_feature(self.epoch_index_today)
+        # self.state = torch.cat([self.X_j, self.Y_j, sin, cos ,torch.tensor([self.epoch_index_today])], dim=0)
+        self.state = torch.cat([self.X_j, self.Y_j, self.normalized_N_j, sin, cos, torch.tensor([self.epoch_index_today])], dim=0)
 
         self.waiting_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # Waiting count per class
         self.in_service_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # In-service count per class
@@ -84,7 +89,7 @@ class HospitalEnv():
         """
         Performs one transition step in the environment based on the given action.
         """
-        self.post_state = self.state.clone()
+
         action = self.simulated_action(logits)  # Sample an action from the action probabilities
 
         self.compute_post_action_state(action)
@@ -283,8 +288,23 @@ class HospitalEnv():
         # 你也可以归一化Y_j和epoch_idx
         normalized_Y_j = self.Y_j / self.N_j
 
+        sin, cos = self.encode_time_feature(h)
         # 拼接成最终状态
-        self.state = torch.cat([occupancy_rates, normalized_Y_j, torch.tensor([h])], dim=0).float()
+        # self.state = torch.cat([occupancy_rates, normalized_Y_j, sin, cos, torch.tensor([h])], dim=0).float()
+        self.state = torch.cat([occupancy_rates, normalized_Y_j, self.normalized_N_j, sin, cos, torch.tensor([h])], dim=0).float()
 
         self.epoch_index_today = h
 
+    def encode_time_feature(self, h):
+
+        h_tensor = torch.tensor(h, dtype=torch.float)
+
+        # Calculate the angle in radians
+        # The factor 2 * math.pi ensures a full cycle (0 to 2*pi) over the period
+        angle = 2 * math.pi * h_tensor / self.num_epochs_per_day
+
+        # Calculate sine and cosine features
+        sin_feature = torch.sin(angle)
+        cos_feature = torch.cos(angle)
+
+        return sin_feature.unsqueeze(0), cos_feature.unsqueeze(0)

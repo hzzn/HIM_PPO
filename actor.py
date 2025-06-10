@@ -37,17 +37,67 @@ class Actor(nn.Module):
         logits = logits.view(-1, self.J, self.J).masked_fill(self.mask == 0, value=-1e9)  # 无效动作的logits设为一个很小的负值
         return logits # 输出形状为 batch_size x J x J
 
+class MLPActor(nn.Module):
+    def __init__(self, config, use_bias=True):
+        super().__init__()
+
+        self.J = config["num_pools"]
+        self.action_dim = self.J * self.J
+        self.state_dim = config["actor_input_dim"]
+        self.hidden_dims = config.get("actor_hidden_dim", [64])
+        self.loss = []
+        self.register_buffer('mask', torch.tensor(config["mask"], dtype=torch.int).view(self.J, self.J))
+        layers = []
+        in_features = self.state_dim
+        
+        for hidden_dim in self.hidden_dims:
+            layers.append(nn.Linear(in_features, hidden_dim, bias=use_bias))
+            layers.append(nn.ReLU()) 
+            in_features = hidden_dim 
+        
+        # Combine all hidden layers into a sequential module
+        self.hidden_layers = nn.Sequential(*layers)
+        
+        # The final output layer maps from the last hidden_dim to 1 (for value prediction)
+        self.output_layer = nn.Linear(in_features, self.action_dim, bias=use_bias)       
+
+        # Initialize weights and biases
+        self.reset_parameters(use_bias)
+
+
+    def reset_parameters(self, use_bias):
+        # Initialize hidden layers
+        for m in self.hidden_layers:
+            if isinstance(m, nn.Linear):
+                init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if use_bias:
+                    init.constant_(m.bias, 0)
+    
+        init.normal_(self.output_layer.weight, mean=0., std=0.01)
+        if use_bias:
+            init.constant_(self.output_layer.bias, 0)
+
+    def forward(self, state):
+        """
+        state: tensor of shape (batch_size, state_dim)
+        return: tensor of shape (batch_size,)
+        """
+        x = state[:, :-1] 
+        x = self.hidden_layers(x)
+        return self.output_layer(x).view(-1, self.J, self.J).masked_fill(self.mask == 0, value=-1e9)
+
+
 class Actor_GRU(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.J = config["num_pools"]
-        self.state_dim = 2 * self.J
+        self.state_dim = config["actor_input_dim"]
         self.action_dim = self.J * self.J
-        self.hidden_dim = 64
+        self.hidden_dims = config.get("actor_hidden_dim", [64])
         self.register_buffer('mask', torch.tensor(config["mask"], dtype=torch.int).view(self.J, self.J))
-
-        self.gru = nn.GRUCell(self.state_dim, self.hidden_dim)
-        self.output_layer = nn.Linear(self.hidden_dim, self.action_dim)
+        
+        self.gru = nn.GRUCell(self.state_dim, self.hidden_dims[0])
+        self.output_layer = nn.Linear(self.hidden_dims[0], self.action_dim)
         # self.tanh = nn.Tanh()  # 标准的 nn.GRUCell 内部已经包含了一个 tanh 激活函数
 
         self.reset_parameters()
@@ -74,9 +124,9 @@ class Actor_GRU(nn.Module):
         logits = []
         new_h = h
         for t in range(T):
-            state_t = states[t][:-1]  # 去掉 epoch index
+            state_t = states[t][:-3]  # 去掉 epoch index
             if new_h is None:
-                new_h = torch.zeros(self.hidden_dim, device=states.device)
+                new_h = torch.zeros(self.hidden_dims[0], device=states.device)
            
             new_h = self.gru(state_t, new_h)
             logit_t = self.output_layer(new_h)
@@ -124,27 +174,51 @@ class Critic(nn.Module):
         value = self.output_layers[epoch_index](x)  # 选择对应时间步的输出层
         return value # 输出形状为 batch_size x J x J
 
-class LinearCritic(nn.Module):
+class MLPCritic(nn.Module):
     def __init__(self, config, use_bias=True):
         super().__init__()
-        state_dim = 2 * config["num_pools"]
-        self.fc1 = nn.Linear(state_dim, 2 * state_dim, bias=use_bias)
-        self.fc2 = nn.Linear(2 * state_dim, 1, bias=use_bias)
-        self.relu = nn.ReLU()
+        self.state_dim = config["critic_input_dim"]
+        self.hidden_dims = config.get("critic_hidden_dim", [64])
         self.loss = []
-        init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
-        init.normal_(self.fc2.weight, mean=0., std=0.01)
+
+        layers = []
+        in_features = self.state_dim
+        
+        for hidden_dim in self.hidden_dims:
+            layers.append(nn.Linear(in_features, hidden_dim, bias=use_bias))
+            layers.append(nn.ReLU()) 
+            in_features = hidden_dim 
+        
+        # Combine all hidden layers into a sequential module
+        self.hidden_layers = nn.Sequential(*layers)
+        
+        # The final output layer maps from the last hidden_dim to 1 (for value prediction)
+        self.output_layer = nn.Linear(in_features, 1, bias=use_bias)       
+
+        # Initialize weights and biases
+        self.reset_parameters(use_bias)
+
+
+    def reset_parameters(self, use_bias):
+        # Initialize hidden layers
+        for m in self.hidden_layers:
+            if isinstance(m, nn.Linear):
+                init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if use_bias:
+                    init.constant_(m.bias, 0)
+    
+        init.normal_(self.output_layer.weight, mean=0., std=0.01)
         if use_bias:
-            init.constant_(self.fc1.bias, 0)
-            init.constant_(self.fc2.bias, 0)
+            init.constant_(self.output_layer.bias, 0)
+
     def forward(self, state):
         """
         state: tensor of shape (batch_size, state_dim)
         return: tensor of shape (batch_size,)
         """
-        
-        x = self.relu(self.fc1(state[:, :-1]))
-        return self.fc2(x).squeeze(-1)
+        x = state[:, :-1] 
+        x = self.hidden_layers(x)
+        return self.output_layer(x).squeeze(-1)
 
 class Critic_GRU(nn.Module):
     def __init__(self, config):

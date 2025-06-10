@@ -87,14 +87,10 @@ ENV_CONFIG = {
     # Random seed for reproducibility
 
     # === training parameter ===
-    "Simulation_days": 1000,
-    # Simulation days per actor.
-
-    "num_actor": 5,
-    #number of actors
-
-    "num_epoch": 10,
-    #Number of training epochs
+    "Simulation_days": 800,
+    "num_actor" : 5,
+    "num_epoch" : 30,
+    "batch_size": 64, 
 
     "Clipping_parameter": 0.3,
 
@@ -104,5 +100,13 @@ ENV_CONFIG = {
     "lam" : 0.95,
     "gamma" : 0.99,
     "is_gae" : False, 
+    "actor_lr" : 1e-4,
+    "critic_lr" : 1e-4,
+    "entropy_coef" : 0.01,
+    "actor_input_dim" : 17,
+    "actor_hidden_dim" : [64], 
+
+    "critic_input_dim" : 17,
+    "critic_hidden_dim" : [64],
 
 }

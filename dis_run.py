@@ -4,12 +4,13 @@ from torch.functional import F
 from torch.distributions import Multinomial, Categorical
 from torch import optim
 from torch.optim import Adam
-from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, LinearLR
 import numpy as np
 import importlib as imp
 import matplotlib.pyplot as plt # 用于绘图
 from tqdm import tqdm
 import os
+import math
 import json
 import ray # 导入 Ray
 
@@ -20,7 +21,9 @@ import utils
 imp.reload(actor_module)
 imp.reload(envs)
 imp.reload(utils)
-from actor import Actor, Actor_GRU, Critic, LinearCritic # 确保从 actor_module 导入
+from actor import  MLPCritic # 确保从 actor_module 导入
+from actor import MLPActor as Actor_GRU
+# from actor import Actor_GRU
 from envs import HospitalEnv
 from utils import mlp_sample, ppo_update, compute_gae_adv # 确保 ppo_update 和 mlp_sample 适应Ray Actor
 from env_config import ENV_CONFIG as config
@@ -61,23 +64,31 @@ def main_ppo_training():
 
     epochs = config["num_epoch"] 
     num_sampling_actors = config["num_actor"] # 在GPU上并行运行的actor数量
+    batch_size = config["batch_size"]
+    Simulation_days = config["Simulation_days"]
+    m = config["num_epochs_per_day"]
 
     costs_mean_epoch = []
     act_loss_mean_epoch = []
     crtc_loss_mean_epoch = []
-
     # --- 主学习器模型 (在主进程中，也可以移到GPU) ---
     learner_actor = Actor_GRU(config)
-    learner_critic = LinearCritic(config)
+    learner_critic = MLPCritic(config)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     learner_actor.to(device)
     learner_critic.to(device)
 
-    optimizer_actor = Adam(learner_actor.parameters(), lr=5e-4)
-    optimizer_critic = Adam(learner_critic.parameters(), lr=1e-4)
-    # scheduler_actor = CosineAnnealingLR(optimizer_actor, T_max=epochs * num_iterations_per_epoch, eta_min=1e-4)
-
+    optimizer_actor = Adam(learner_actor.parameters(), lr=config.get("actor_lr", 1e-4))
+    optimizer_critic = Adam(learner_critic.parameters(), lr=config.get("critic_lr", 1e-4))
+    # 余弦退火
+    # scheduler_actor = CosineAnnealingLR(optimizer_actor, T_max=epochs, eta_min=1e-6)
+    # scheduler_critic = CosineAnnealingLR(optimizer_critic, T_max=epochs, eta_min=1e-6)
+    # 线性降为0
+    total_steps = epochs * math.ceil(num_sampling_actors * Simulation_days * m / batch_size )
+    scheduler_actor = LinearLR(optimizer_actor, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
+    scheduler_critic = LinearLR(optimizer_critic, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
+    
     # --- 创建采样 Actors ---
     sampling_actors = [SamplingActor.remote(config, rank=i) for i in range(num_sampling_actors)]
     
@@ -169,8 +180,9 @@ def main_ppo_training():
         memory = (states, actions, old_log_probs, costs, next_states)
         
         # --- PPO 更新 (在主学习器上) ---
-        ppo_update(learner_actor, learner_critic, memory, optimizer_actor, optimizer_critic, config)
-        # scheduler_actor.step() # 如果使用学习率调度器
+        ppo_update(learner_actor, learner_critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config)
+        # scheduler_actor.step()
+        # scheduler_critic.step()
 
         # --- 记录损失和成本 ---
         # 注意：ppo_update 内部应该将 learner_actor.loss 和 learner_critic.loss 填充为 tensor

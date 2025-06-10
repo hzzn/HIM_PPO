@@ -1,5 +1,6 @@
 import torch
 from torch.functional import F
+from torch.distributions import Categorical
 from tqdm import tqdm
 
 def compute_advantage(critic, states, next_states, rewards,  mean_cost):
@@ -25,7 +26,7 @@ def compute_gae_adv(critic, states, next_states, rewards, gamma=0.99, lam=0.95):
         target = advantages + values
     return advantages, target
 
-def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config):
+def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config):
     device = next(actor.parameters()).device
     states, actions, old_log_probs, costs, next_states = memory
     # 将所有数据从 CPU 传输到 GPU
@@ -68,6 +69,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         max_norm = config.get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=max_norm)
         optimizer_critic.step()
+        scheduler_critic.step()
 
     # Step 2: compute advantage
     if is_gae:
@@ -91,6 +93,10 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         else:
             logits = actor(s).view_as(f)
         
+        dist = Categorical(logits=logits)
+        entropy = dist.entropy().mean()
+        entropy_coef = config.get("entropy_coef", 0.01) 
+
         logp_new = F.log_softmax(logits, dim=-1)
         log_ratio = ((logp_new - logp_old) * f).sum(dim=(1, 2))
         ratio = torch.exp(log_ratio)
@@ -99,13 +105,15 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, config)
         surr1 = ratio * adv        
         surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * adv
         
-        actor_loss = -torch.min(surr1, surr2).mean()
+        actor_loss = -torch.min(surr1, surr2).mean() 
+        # actor_loss -= entropy_coef * entropy 
         actor.loss.append(actor_loss)
         optimizer_actor.zero_grad()
         actor_loss.backward()
         max_norm = config.get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=max_norm)
         optimizer_actor.step()
+        scheduler_actor.step()
 
 def mlp_sample(env, actor, config,  is_random=False):
     """
@@ -188,6 +196,21 @@ def overflow_sample(env, config, is_random=False):
         state = next_state
 
     return trajectory
+
+def encode_time_feature(h_value, num_epochs_per_day):
+
+    h_tensor = torch.tensor(h_value, dtype=torch.float)
+
+    # Calculate the angle in radians
+    # The factor 2 * math.pi ensures a full cycle (0 to 2*pi) over the period
+    angle = 2 * math.pi * h_tensor / num_epochs_per_day
+
+    # Calculate sine and cosine features
+    sin_feature = torch.sin(angle)
+    cos_feature = torch.cos(angle)
+
+    return sin_feature.unsqueeze(0), cos_feature.unsqueeze(0)
+
 
 def main(env, actor, critic, optimizer_actor, optimizer_critic, trajectory, config):
     states = torch.stack([t['state'] for t in trajectory]).float()

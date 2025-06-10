@@ -12,7 +12,8 @@ from tqdm import tqdm
 import actor
 import envs
 import utils
-from actor import Actor, Actor_GRU, Critic, LinearCritic
+from actor import  Critic, MLPCritic
+from actor import MLPActor as Actor_GRU
 from envs import HospitalEnv
 from utils import mlp_sample, ppo_update, overflow_sample, compute_gae_adv
 from env_config import ENV_CONFIG as config
@@ -24,11 +25,11 @@ if __name__ == "__main__":
     crtc_loss_mean = []
     env = HospitalEnv(config)
     act = Actor_GRU(config) 
-    crtc = LinearCritic(config)
+    crtc = MLPCritic(config)
     optimizer_actor = Adam(act.parameters(), lr=5e-4)
     optimizer_critic = Adam(crtc.parameters(), lr=1e-3)
     scheduler_actor = CosineAnnealingLR(optimizer_actor, T_max=epochs, eta_min=1e-4)
-    # scheduler_critic = CosineAnnealingLR(optimizer_actor, T_max=5, eta_min=1e-4)
+    scheduler_critic = CosineAnnealingLR(optimizer_actor, T_max=5, eta_min=1e-4)
     iters = 0
 
     for i in range(epochs):
@@ -46,8 +47,7 @@ if __name__ == "__main__":
         old_probs = F.log_softmax(logits, dim=-1)
 
         memory = (states, actions, old_probs, costs, next_states)
-        ppo_update(act, crtc, memory, optimizer_actor, optimizer_critic, config)
-        # scheduler_actor.step()
+        ppo_update(act, crtc, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config)
 
         costs_mean.append(costs.mean() * 8)
         act_loss_mean.append(sum(act.loss) / len(act.loss))
