@@ -1,6 +1,7 @@
 import torch
 from torch.functional import F
 from torch.distributions import Categorical
+import numpy as np
 from tqdm import tqdm
 
 def compute_advantage(critic, states, next_states, rewards,  mean_cost):
@@ -28,7 +29,7 @@ def compute_gae_adv(critic, states, next_states, rewards, gamma=0.99, lam=0.95):
 
 def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config):
     device = next(actor.parameters()).device
-    states, actions, old_log_probs, costs, next_states = memory
+    states, actions, old_log_probs, costs, next_states, mean_cost = memory
     # 将所有数据从 CPU 传输到 GPU
     states = states.to(device)
     actions = actions.to(device)
@@ -41,7 +42,6 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
     gm = config.get("gamma", 0.99)
     lam = config.get("lam", 0.95)
     clip_ratio = config["Clipping_parameter"]
-    mean_cost = costs.mean().item()
     is_gae = config.get("is_gae", True)
 
     # Step 1: update critic
@@ -56,7 +56,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
 
         # v_s_prime = critic(s_prime)
         if is_gae:
-            adv, target  = compute_gae_adv(critic, s, next_s, r, gm, lam).to(device)
+            adv, target  = compute_gae_adv(critic, s, next_s, r, gm, lam)
         else:
             adv, target = compute_advantage(critic, s, next_s, r, mean_cost)        
         
@@ -73,7 +73,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
 
     # Step 2: compute advantage
     if is_gae:
-        advantages, _ = compute_gae_adv(critic, states, next_states, rewards, gm, lam).to(device)
+        advantages, _ = compute_gae_adv(critic, states, next_states, rewards, gm, lam)
     else:
         advantages, _ = compute_advantage(critic, states, next_states, rewards, mean_cost)
     # Step 3: update actor
@@ -95,7 +95,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
         
         dist = Categorical(logits=logits)
         entropy = dist.entropy().mean()
-        entropy_coef = config.get("entropy_coef", 0.01) 
+        entropy_coef = config.get("entropy_coef", 0) 
 
         logp_new = F.log_softmax(logits, dim=-1)
         log_ratio = ((logp_new - logp_old) * f).sum(dim=(1, 2))
@@ -106,7 +106,7 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
         surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * adv
         
         actor_loss = -torch.min(surr1, surr2).mean() 
-        # actor_loss -= entropy_coef * entropy 
+        actor_loss -= entropy_coef * entropy 
         actor.loss.append(actor_loss)
         optimizer_actor.zero_grad()
         actor_loss.backward()
@@ -135,6 +135,8 @@ def mlp_sample(env, actor, config,  is_random=False):
             - f (raw atomic action matrix)
     """
     trajectory = []
+
+    reward_scaling = RewardScaling(shape=(1), gamma=config.get("gamma", 0.9))
     state = env.reset(is_random)  # Tensor, shape = (state_dim,)
     max_days = config["Simulation_days"]
     num_epochs_per_day = config["num_epochs_per_day"]
@@ -161,7 +163,8 @@ def mlp_sample(env, actor, config,  is_random=False):
             'logits': logits,    # shape: (J, J)
             'action': action,             # e.g. selected indices or tensor actions
             'cost': cost,             # scalar
-            'next_state': next_state      # shape: (state_dim,)
+            'scaled_cost': reward_scaling(cost),
+            'next_state': next_state,      # shape: (state_dim,)
         })
 
         state = next_state
@@ -210,6 +213,55 @@ def encode_time_feature(h_value, num_epochs_per_day):
     cos_feature = torch.cos(angle)
 
     return sin_feature.unsqueeze(0), cos_feature.unsqueeze(0)
+
+class RunningMeanStd:
+    # Dynamically calculate mean and std
+    def __init__(self, shape):  # shape:the dimension of input data
+        self.n = 0
+        self.mean = torch.zeros(shape)
+        self.S = torch.zeros(shape)
+        self.std = torch.sqrt(self.S)
+
+    def update(self, x):
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x)
+        self.n += 1
+        if self.n == 1:
+            self.mean = x
+            self.std = x
+        else:
+            old_mean = self.mean.clone().detach()
+            self.mean = old_mean + (x - old_mean) / self.n
+            self.S = self.S + (x - old_mean) * (x - self.mean)
+            self.std = torch.sqrt(self.S / self.n)
+
+class Normalization:
+    def __init__(self, shape):
+        self.running_ms = RunningMeanStd(shape=shape)
+
+    def __call__(self, x, update=True):
+        # Whether to update the mean and std,during the evaluating,update=Flase
+        if update:  
+            self.running_ms.update(x)
+        x = (x - self.running_ms.mean) / (self.running_ms.std + 1e-8)
+
+        return x
+
+class RewardScaling:
+    def __init__(self, shape, gamma):
+        self.shape = shape  # reward shape=1
+        self.gamma = gamma  # discount factor
+        self.running_ms = RunningMeanStd(shape=self.shape)
+        self.R = torch.zeros(self.shape)
+
+    def __call__(self, x):
+        self.R = self.gamma * self.R + x
+        self.running_ms.update(self.R)
+        x = x / (self.running_ms.std + 1e-8)  # Only divided std
+        return x
+
+    def reset(self):  # When an episode is done,we should reset 'self.R'
+        self.R = torch.zeros(self.shape)
 
 
 def main(env, actor, critic, optimizer_actor, optimizer_critic, trajectory, config):

@@ -96,17 +96,23 @@ ENV_CONFIG = {
 
     "Gap_Tol": 0.1,
     
-    "max_norm" : 1,
+    "max_norm" : 0.5,
     "lam" : 0.95,
-    "gamma" : 0.99,
-    "is_gae" : False, 
+    "gamma" : 0.99, 
     "actor_lr" : 1e-4,
     "critic_lr" : 1e-4,
+    "adam_eps" : 1e-5, # 默认1e-8
     "entropy_coef" : 0.01,
-    "actor_input_dim" : 17,
+    "actor_input_dim" : 12,
     "actor_hidden_dim" : [64], 
 
-    "critic_input_dim" : 17,
+    "critic_input_dim" : 12,
     "critic_hidden_dim" : [64],
 
+    "is_gae" : True,
+    "running_mean_std_norm" : True, 
+    "sin_cos_encode": True, 
+    "normalized_N_j" : False,
+    "reward_scaling" : True,
+    "orthogonal_init" : True,
 }

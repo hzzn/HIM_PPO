@@ -19,12 +19,26 @@ class Actor(nn.Module):
         # 共享的隐藏层
         self.fc1 = nn.Linear(self.state_dim, self.hidden_dim)
         self.output_layers = nn.ModuleList([nn.Linear(self.hidden_dim, self.action_dim) for _ in range(self.m)])
-        self.reset_parameters()
+        if config["orthogonal_init"]:
+            self.orthogonal_reset_parameters()
+        else:
+            self.reset_parameters()
         self.loss = []
     def reset_parameters(self):
         # 使用 Kaiming 初始化，适用于 ReLU 激活
         nn.init.kaiming_normal_(self.fc1.weight, nonlinearity='relu')
         nn.init.constant_(self.fc1.bias, 0.0)
+
+    def orthogonal_reset_parameters(self):
+        for m in self.hidden_layers:
+            if isinstance(m, nn.Linear):
+                # 使用正交初始化，gain 默认 1.0 (适合 Tanh)
+                orthogonal_init(m, gain=1.0) 
+        
+        # 初始化输出层
+        # 论文建议 Actor 输出层 gain=0.01。这有助于在训练开始时使 logits 较小，策略更随机。
+        orthogonal_init(self.output_layer, gain=0.01)
+
 
     def forward(self, states):
         logits = []
@@ -52,7 +66,7 @@ class MLPActor(nn.Module):
         
         for hidden_dim in self.hidden_dims:
             layers.append(nn.Linear(in_features, hidden_dim, bias=use_bias))
-            layers.append(nn.ReLU()) 
+            layers.append(nn.Tanh()) 
             in_features = hidden_dim 
         
         # Combine all hidden layers into a sequential module
@@ -62,7 +76,10 @@ class MLPActor(nn.Module):
         self.output_layer = nn.Linear(in_features, self.action_dim, bias=use_bias)       
 
         # Initialize weights and biases
-        self.reset_parameters(use_bias)
+        if config["orthogonal_init"]:
+            self.orthogonal_reset_parameters()
+        else:
+            self.reset_parameters(use_bias)
 
 
     def reset_parameters(self, use_bias):
@@ -76,6 +93,16 @@ class MLPActor(nn.Module):
         init.normal_(self.output_layer.weight, mean=0., std=0.01)
         if use_bias:
             init.constant_(self.output_layer.bias, 0)
+    
+    def orthogonal_reset_parameters(self):
+        for m in self.hidden_layers:
+            if isinstance(m, nn.Linear):
+                # 使用正交初始化，gain 默认 1.0 (适合 Tanh)
+                orthogonal_init(m, gain=1.0) 
+        
+        # 初始化输出层
+        # 论文建议 Actor 输出层 gain=0.01。这有助于在训练开始时使 logits 较小，策略更随机。
+        orthogonal_init(self.output_layer, gain=0.01)
 
     def forward(self, state):
         """
@@ -186,7 +213,7 @@ class MLPCritic(nn.Module):
         
         for hidden_dim in self.hidden_dims:
             layers.append(nn.Linear(in_features, hidden_dim, bias=use_bias))
-            layers.append(nn.ReLU()) 
+            layers.append(nn.Tanh()) 
             in_features = hidden_dim 
         
         # Combine all hidden layers into a sequential module
@@ -196,7 +223,11 @@ class MLPCritic(nn.Module):
         self.output_layer = nn.Linear(in_features, 1, bias=use_bias)       
 
         # Initialize weights and biases
-        self.reset_parameters(use_bias)
+                # Initialize weights and biases
+        if config["orthogonal_init"]:
+            self.orthogonal_reset_parameters()
+        else:
+            self.reset_parameters(use_bias)
 
 
     def reset_parameters(self, use_bias):
@@ -210,6 +241,16 @@ class MLPCritic(nn.Module):
         init.normal_(self.output_layer.weight, mean=0., std=0.01)
         if use_bias:
             init.constant_(self.output_layer.bias, 0)
+
+    def orthogonal_reset_parameters(self):
+        for m in self.hidden_layers:
+            if isinstance(m, nn.Linear):
+                # 使用正交初始化，gain 默认 1.0 (适合 Tanh)
+                orthogonal_init(m, gain=1.0) 
+        
+        # 初始化输出层
+        # 论文建议 Actor 输出层 gain=0.01。这有助于在训练开始时使 logits 较小，策略更随机。
+        orthogonal_init(self.output_layer, gain=0.01)
 
     def forward(self, state):
         """
@@ -238,3 +279,11 @@ class Critic_GRU(nn.Module):
         return value, h
 
 
+def orthogonal_init(layer, gain=1.0):
+    """
+    对 nn.Linear 层的权重进行正交初始化，偏置初始化为 0。
+    """
+    if isinstance(layer, nn.Linear):
+        nn.init.orthogonal_(layer.weight, gain=gain)
+        if layer.bias is not None:
+            nn.init.constant_(layer.bias, 0)

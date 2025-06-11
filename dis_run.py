@@ -79,8 +79,8 @@ def main_ppo_training():
     learner_actor.to(device)
     learner_critic.to(device)
 
-    optimizer_actor = Adam(learner_actor.parameters(), lr=config.get("actor_lr", 1e-4))
-    optimizer_critic = Adam(learner_critic.parameters(), lr=config.get("critic_lr", 1e-4))
+    optimizer_actor = Adam(learner_actor.parameters(), lr=config.get("actor_lr", 1e-4), eps=config["adam_eps"])
+    optimizer_critic = Adam(learner_critic.parameters(), lr=config.get("critic_lr", 1e-4), eps=config["adam_eps"])
     # 余弦退火
     # scheduler_actor = CosineAnnealingLR(optimizer_actor, T_max=epochs, eta_min=1e-6)
     # scheduler_critic = CosineAnnealingLR(optimizer_critic, T_max=epochs, eta_min=1e-6)
@@ -97,9 +97,6 @@ def main_ppo_training():
     ray.get([actor.set_weights.remote(learner_actor_weights_cpu) for actor in sampling_actors])
 
     # --- 检查采样actor模型设备 (可选调试步骤) ---
-    # devices = ray.get([actor.get_actor_model_device.remote() for actor in sampling_actors])
-    # print(f"Sampling actors are on devices: {devices}")
-    # print(f"Learner actor is on device: {next(learner_actor.parameters()).device}")
     
     # --- 3. 加载检查点 ---
     try:
@@ -111,6 +108,9 @@ def main_ppo_training():
         learner_critic.load_state_dict(checkpoint['crtc_state_dict'])
         optimizer_actor.load_state_dict(checkpoint['optimizer_actor_state_dict'])
         optimizer_critic.load_state_dict(checkpoint['optimizer_critic_state_dict'])
+
+        optimizer_actor.param_groups[0]['lr'] = config.get("actor_lr", 1e-4)
+        optimizer_critic.param_groups[0]['lr'] = config.get("actor_lr", 1e-4)
 
         # 恢复训练步数
         total_update_steps = checkpoint['update_steps']
@@ -157,27 +157,36 @@ def main_ppo_training():
         aggregated_costs_list = []
         aggregated_next_states_list = []
         aggregated_logits_list = []
+        aggregated_scaled_costs_list = []
 
         for traj_list_cpu in all_trajectories_list_cpu:
             for t_cpu in traj_list_cpu:
                 aggregated_states_list.append(t_cpu['state'].to(device))
                 aggregated_actions_list.append(t_cpu['action'].to(device))
-                aggregated_costs_list.append(t_cpu['cost'] / 100.0) # cost 是标量，直接用
+                aggregated_costs_list.append(t_cpu['cost']) # cost 是标量，直接用
                 aggregated_next_states_list.append(t_cpu['next_state'].to(device))
                 aggregated_logits_list.append(t_cpu['logits'].to(device))
+                if config["reward_scaling"] :
+                    aggregated_scaled_costs_list.append(t_cpu['scaled_cost'].to(device))
+
         
-        if not aggregated_states_list: # 如果没有收集到轨迹，则跳过本次更新
+        if not aggregated_states_list:
             print("No trajectories collected, skipping update.")
             continue
 
         states = torch.stack(aggregated_states_list).float()
         actions = torch.stack(aggregated_actions_list).float()
-        costs = torch.tensor(aggregated_costs_list, dtype=torch.float32)
+        costs = torch.tensor(aggregated_costs_list, dtype=torch.float)
+
+        mean_cost = costs.mean().item()
+        avg_cost_iter = mean_cost * 8
+        costs = costs / (costs.std() + 1e-8)
         next_states = torch.stack(aggregated_next_states_list).float()
         logits = torch.stack(aggregated_logits_list).float()
         old_log_probs = F.log_softmax(logits, dim=-1) # log_softmax on device
-
-        memory = (states, actions, old_log_probs, costs, next_states)
+        if config["reward_scaling"] :
+            costs = torch.tensor(aggregated_scaled_costs_list, dtype=torch.float)
+        memory = (states, actions, old_log_probs, costs, next_states, mean_cost)
         
         # --- PPO 更新 (在主学习器上) ---
         ppo_update(learner_actor, learner_critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config)
@@ -185,13 +194,9 @@ def main_ppo_training():
         # scheduler_critic.step()
 
         # --- 记录损失和成本 ---
-        # 注意：ppo_update 内部应该将 learner_actor.loss 和 learner_critic.loss 填充为 tensor
-        # 如果它们是 list of tensors, 需要先转换
         if learner_actor.loss and learner_critic.loss:
             avg_actor_loss_iter = torch.stack(learner_actor.loss).mean().item()
             avg_critic_loss_iter = torch.stack(learner_critic.loss).mean().item()
-            avg_cost_iter = costs.mean().item() * 8 # 乘以8是什么含义？根据原代码保留
-
             costs_mean_epoch.append(avg_cost_iter)
             act_loss_mean_epoch.append(avg_actor_loss_iter)
             crtc_loss_mean_epoch.append(avg_critic_loss_iter)

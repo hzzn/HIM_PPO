@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch.distributions import Multinomial, Categorical
 from torch.functional import F
+from utils import Normalization, RewardScaling
 import math
 
 
@@ -12,7 +13,7 @@ class HospitalEnv():
         # === Pool structure ===
         self.num_pools = config["num_pools"]  # 𝒥: Number of pools
         self.J = self.num_pools
-
+        self.config = config
         # === Server configuration ===
         self.N_j = torch.tensor(config["num_servers"],
                                                  dtype=torch.int)  # N_j: Number of beds per pool
@@ -30,38 +31,18 @@ class HospitalEnv():
 
         # === Decision epoch ===
         self.num_epochs_per_day = config["num_epochs_per_day"]  # m: Number of epochs per day
-        self.epoch_times = torch.tensor(
-            [i * (24 / self.num_epochs_per_day) for i in range(self.num_epochs_per_day)], dtype=torch.float)
 
-        # === Day tracking ===
-        self.day_count = 0  # t: current day t
-        self.epoch_index_today = 0  # H(t): current epoch index within day
-
-        # === State representation (X_j, Y_j, h) ===
-        self.X_j = torch.zeros(self.num_pools, dtype=torch.int)  # X_j: current number of customers in pool j
-        self.Y_j = torch.zeros(self.num_pools,
-                               dtype=torch.int)  # Y_j: number of patients to be discharged today in each pool
-        self.state = torch.cat([self.X_j, self.Y_j, torch.tensor([self.epoch_index_today])], dim=0)
         self.overflow = torch.zeros(self.num_pools, dtype=torch.int)  # Overflow patients
 
         # === Action representation ===
-        self.overflow_and_wait_decision = torch.zeros(self.num_pools, self.num_pools,
-                                                      dtype=torch.int)  # F(t_k): overflow/wait decisions matrix
-        self.mask = torch.tensor(config["mask"], dtype=torch.int)  # Mask for invalid actions
 
-        # === Waiting count and in-service tracking ===
-        self.waiting_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # Q_j: Waiting count per class
-        self.in_service_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # Z_j: In-service count
+        self.mask = torch.tensor(config["mask"], dtype=torch.int)  # Mask for invalid actions
 
         # === Cost structure ===
         self.holding_cost = torch.tensor(config["waiting_cost"],
                                                    dtype=torch.float)  # C_j: Cost per unit of waiting
         self.overflow_cost = torch.tensor(config["overflow_cost"],
                                                  dtype=torch.float)  # B_ij: Overflow cost from class i to pool j
-
-        # === One-epoch cost tracking ===
-        self.current_epoch_cost = 0.0  # g(s, f): One-epoch cost under action f
-
         self.reset()
 
     def reset(self, is_random=False):
@@ -70,18 +51,32 @@ class HospitalEnv():
         """
         self.day_count = 0  # t = 0
         self.epoch_index_today = 0  # h(t) = 0
+        self.normlization = Normalization(shape=(2 * self.J))
+        h = 0
         if is_random:
             # self.X_j = torch.cat([torch.randint(2*n//3, n+1, (1,)) for n in self.N_j])
             self.X_j = torch.tensor([2 * n // 3 for n in self.N_j])
         else:
             self.X_j = torch.zeros(self.num_pools, dtype=torch.int)  # X_j: current number of customers in pool j
         self.Y_j = torch.zeros(self.num_pools, dtype=torch.int)  # Y_j: number of patients to be discharged today in each pool
-        sin, cos = self.encode_time_feature(self.epoch_index_today)
-        # self.state = torch.cat([self.X_j, self.Y_j, sin, cos ,torch.tensor([self.epoch_index_today])], dim=0)
-        self.state = torch.cat([self.X_j, self.Y_j, self.normalized_N_j, sin, cos, torch.tensor([self.epoch_index_today])], dim=0)
+        
+       
+        if self.config["running_mean_std_norm"]:
+            X_Y = torch.cat([self.X_j, self.Y_j], dim=0)
+            X_Y = self.normlization(X_Y)
+        else:
+            X = self.X_j / self.N_j
+            Y = self.Y_j / self.N_j
+            X_Y = torch.cat([X, Y], dim=0)
+        
+        if self.config["normalized_N_j"]:
+            X_Y = torch.cat([X_Y, self.normalized_N_j], dim=0)
 
-        self.waiting_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # Waiting count per class
-        self.in_service_count_list = torch.zeros(self.num_pools, dtype=torch.int)  # In-service count per class
+        if self.config["sin_cos_encode"]:
+            sin, cos = self.encode_time_feature(h)
+            self.state = torch.cat([X_Y, sin, cos, torch.tensor([h])], dim=0).float()
+        else:
+            self.state = torch.cat([X_Y, torch.tensor([h])], dim=0).float()
         
         return self.state
 
@@ -169,28 +164,6 @@ class HospitalEnv():
 
         return action
         # 判断并重新采样直到可行
-        """for i in range(self.J):
-            num_patients = self.overflow[i]
-            dist = Categorical(action_prob[i, :])  # 创建 Categorical 分布对象
-            for _ in range(num_patients):
-                num_resample = 0 # 记录重采样次数, 为重采样次数设定阈值, 防止陷入死循环
-                while True:  # 重复采样直到得到可行的分配
-                    if num_resample >= 5:
-                        action[i, i] += 1
-                        self.X_j[i] += 1
-                        break     
-
-                    target = dist.sample()  # 采样
-
-                    if self.N_j[target] > self.X_j[target]:
-                        action[i, target] += 1
-                        self.X_j[target] += 1
-                        break # 如果分配可行，退出循环, 否则继续循环重新采样
-
-                    num_resample += 1
-
-        return action"""
-
 
     def compute_post_action_state(self, action):
         """
@@ -283,15 +256,22 @@ class HospitalEnv():
         if h == 0:
             self.day_count += 1  # 每日递增
 
-        # 拼接新的状态
-        occupancy_rates = self.X_j / self.N_j
-        # 你也可以归一化Y_j和epoch_idx
-        normalized_Y_j = self.Y_j / self.N_j
+        if self.config["running_mean_std_norm"]:
+            X_Y = torch.cat([self.X_j, self.Y_j], dim=0)
+            X_Y = self.normlization(X_Y)
+        else:
+            X = self.X_j / self.N_j
+            Y = self.Y_j / self.N_j
+            X_Y = torch.cat([X, Y], dim=0)
+        
+        if self.config["normalized_N_j"]:
+            X_Y = torch.cat([X_Y, self.normalized_N_j], dim=0)
 
-        sin, cos = self.encode_time_feature(h)
-        # 拼接成最终状态
-        # self.state = torch.cat([occupancy_rates, normalized_Y_j, sin, cos, torch.tensor([h])], dim=0).float()
-        self.state = torch.cat([occupancy_rates, normalized_Y_j, self.normalized_N_j, sin, cos, torch.tensor([h])], dim=0).float()
+        if self.config["sin_cos_encode"]:
+            sin, cos = self.encode_time_feature(h)
+            self.state = torch.cat([X_Y, sin, cos, torch.tensor([h])], dim=0).float()
+        else:
+            self.state = torch.cat([X_Y, torch.tensor([h])], dim=0).float()
 
         self.epoch_index_today = h
 
