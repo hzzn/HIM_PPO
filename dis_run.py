@@ -128,14 +128,8 @@ def main_ppo_training():
         total_update_steps = 0
 
     for epoch in range(epochs):
+
         print(f"\n--- Epoch {epoch+1}/{epochs} ---")
-        
-        # 用于记录这个epoch内的所有loss和cost
-        current_epoch_costs = []
-        current_epoch_actor_losses = []
-        current_epoch_critic_losses = []
-
-
         total_update_steps += 1
         learner_critic.loss = [] # 重置学习器的loss列表
         learner_actor.loss = []  # 重置学习器的loss列表
@@ -146,18 +140,19 @@ def main_ppo_training():
 
         # --- 聚合轨迹 ---
         # 将所有actor的轨迹合并为一个大的batch
-        # 注意：需要确保 mlp_sample 返回的trajectory中的tensor都在CPU上，以便ray传输
-        
+        # 注意：需要确保 mlp_sample 返回的trajectory中的tensor都在CPU上，以便ray传输        
         # 确保 utils.py 中的 ppo_update 和 mlp_sample 能够处理好 Ray actor返回的 trajectory 格式
         # 并将数据转移到正确的device上进行训练
         
         # 将CPU上的轨迹数据转换为torch tensor并移到learner的device
+
         aggregated_states_list = []
         aggregated_actions_list = []
         aggregated_costs_list = []
         aggregated_next_states_list = []
         aggregated_logits_list = []
         aggregated_scaled_costs_list = []
+        mean_cost = []
 
         for traj_list_cpu in all_trajectories_list_cpu:
             for t_cpu in traj_list_cpu:
@@ -168,25 +163,23 @@ def main_ppo_training():
                 aggregated_logits_list.append(t_cpu['logits'].to(device))
                 if config["reward_scaling"] :
                     aggregated_scaled_costs_list.append(t_cpu['scaled_cost'].to(device))
-
         
-        if not aggregated_states_list:
-            print("No trajectories collected, skipping update.")
-            continue
+            if not aggregated_states_list:
+                print("No trajectories collected, skipping update.")
+                continue
 
         states = torch.stack(aggregated_states_list).float()
         actions = torch.stack(aggregated_actions_list).float()
         costs = torch.tensor(aggregated_costs_list, dtype=torch.float)
 
-        mean_cost = costs.mean().item()
-        avg_cost_iter = mean_cost * 8
+        avg_cost_iter = costs.mean().item() * 8 
         costs = costs / (costs.std() + 1e-8)
         next_states = torch.stack(aggregated_next_states_list).float()
         logits = torch.stack(aggregated_logits_list).float()
         old_log_probs = F.log_softmax(logits, dim=-1) # log_softmax on device
         if config["reward_scaling"] :
             costs = torch.tensor(aggregated_scaled_costs_list, dtype=torch.float)
-        memory = (states, actions, old_log_probs, costs, next_states, mean_cost)
+        memory = (states, actions, old_log_probs, costs, next_states)
         
         # --- PPO 更新 (在主学习器上) ---
         ppo_update(learner_actor, learner_critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config)
@@ -203,7 +196,7 @@ def main_ppo_training():
             
             print(f"  Iter {epoch + 1}: Daily Avg Cost: {avg_cost_iter:.2f}, Critic Loss: {avg_critic_loss_iter:.3f}, Actor Loss: {avg_actor_loss_iter:.3f}")
 
-        # --- 更新采样 Actors 的权重 ---
+            # --- 更新采样 Actors 的权重 ---
         updated_learner_weights_cpu = {k: v.cpu() for k, v in learner_actor.state_dict().items()}
         weight_update_futures = [actor.set_weights.remote(updated_learner_weights_cpu) for actor in sampling_actors]
         ray.get(weight_update_futures) # 确保权重更新完成
@@ -220,39 +213,6 @@ def main_ppo_training():
     }
     with open(filepath, 'w') as f:
         json.dump(data_to_save, f, indent=4) # indent=4 使 JSON 文件更易读
-
-    # --- 绘图 ---
-    # 注意：从Ray actor收集的loss需要聚合到主进程中才能绘图
-    # 这里假设 learner_actor.loss 和 learner_critic.loss 存储了所有迭代的loss均值
-    
-    # 绘制每个epoch的平均损失和成本
-    plot_epochs = list(range(len(costs_mean_epoch)))
-    if plot_epochs: # 确保有数据可画
-        plt.figure(figsize=(12, 5))
-        plt.subplot(1, 3, 1)
-        plt.plot(plot_epochs, costs_mean_epoch, marker='o', label='Avg Cost per Epoch')
-        plt.xlabel('Epoch')
-        plt.ylabel('Average Cost')
-        plt.legend()
-        plt.grid(True)
-
-        plt.subplot(1, 3, 2)
-        plt.plot(plot_epochs, act_loss_mean_epoch, marker='o', label='Avg Actor Loss per Epoch', color='orange')
-        plt.xlabel('Epoch')
-        plt.ylabel('Actor Loss')
-        plt.legend()
-        plt.grid(True)
-
-        plt.subplot(1, 3, 3)
-        plt.plot(plot_epochs, crtc_loss_mean_epoch, marker='o', label='Avg Critic Loss per Epoch', color='blue')
-        plt.xlabel('Epoch')
-        plt.ylabel('Critic Loss')
-        plt.legend()
-        plt.grid(True)
-        
-        plt.suptitle("Training Curves per Epoch")
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.show()
 
     # --- 保存模型检查点 (与原代码类似) ---
     torch.save({

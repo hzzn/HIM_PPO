@@ -3,15 +3,47 @@ from torch.functional import F
 from torch.distributions import Categorical
 import numpy as np
 from tqdm import tqdm
+import math
 
-def compute_advantage(critic, states, next_states, rewards,  mean_cost):
+def compute_advantages(critic, states, next_states, rewards, config):
+
+    num_actor = config.get("num_actor", 1)
+    if num_actor > 1:
+        advantanges = []
+        targets = []
+        traj_len = len(states) // num_actor
+        for i in range(0, len(states), traj_len):
+            batch_slice = slice(i, i + traj_len)
+            s = states[batch_slice]
+            next_s = next_states[batch_slice]
+            r = rewards[batch_slice]
+            adv, tgt = compute_advantage(critic, s, next_s, r, config)
+            advantanges.append(adv)
+            targets.append(tgt)
+        return torch.stack(advantanges), torch.stack(targets)
+    else:
+        return compute_advantage(critic, states, next_states, rewards, config)
+
+
+def compute_advantage(critic, states, next_states, rewards, config):
+    is_gae = config.get("is_gae", True)
+    if is_gae:
+        gm = config.get("gamma", 0.99)
+        lam = config.get("lam", 0.95)
+        return compute_gae_adv(critic, states, next_states, rewards, gamma=gm, lam=lam)
+    else:
+        return compute_mean_cost_adv(critic, states, next_states, rewards)
+
+def compute_mean_cost_adv(critic, states, next_states, rewards):
     with torch.no_grad():
         values = critic(states)           # v(s)
         next_values = critic(next_states) # v(s')
-        
+        mean_cost = -rewards.mean()
+
         advantages = rewards + mean_cost + next_values - values
         target = rewards + mean_cost + next_values 
     return advantages, target
+
 def compute_gae_adv(critic, states, next_states, rewards, gamma=0.99, lam=0.95):
     with torch.no_grad():
         advantages = []
@@ -28,64 +60,47 @@ def compute_gae_adv(critic, states, next_states, rewards, gamma=0.99, lam=0.95):
     return advantages, target
 
 def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config):
-    device = next(actor.parameters()).device
-    states, actions, old_log_probs, costs, next_states, mean_cost = memory
+    
     # 将所有数据从 CPU 传输到 GPU
+    device = next(actor.parameters()).device
+    states, actions, old_log_probs, costs, next_states = memory
     states = states.to(device)
     actions = actions.to(device)
     old_log_probs = old_log_probs.to(device)
     costs = costs.to(device) # 将 costs 也移到设备上
     next_states = next_states.to(device)
-
+    
     rewards = -costs
     batch_size = config.get("batch_size", 64)
-    gm = config.get("gamma", 0.99)
-    lam = config.get("lam", 0.95)
     clip_ratio = config["Clipping_parameter"]
-    is_gae = config.get("is_gae", True)
+    max_norm = config.get("max_norm", 1.0)
 
-    # Step 1: update critic
-    
-    for i in tqdm(range(0, len(states), batch_size), desc="Critic Update", leave=False):
-        #1. Critic Update
+    # 计算优势
+    advantages, targets = compute_advantages(critic, states, next_states, rewards, config)
+
+    # update
+    for i in tqdm(range(0, len(states), batch_size), desc="PPO Update", leave=False):
+       
+        #-----1.Critic Update-----
         batch_slice = slice(i, i + batch_size)
         s = states[batch_slice]
-        next_s = next_states[batch_slice]
-        r = rewards[batch_slice]
-        c = costs[batch_slice]
-
-        # v_s_prime = critic(s_prime)
-        if is_gae:
-            adv, target  = compute_gae_adv(critic, s, next_s, r, gm, lam)
-        else:
-            adv, target = compute_advantage(critic, s, next_s, r, mean_cost)        
+        adv = advantages[batch_slice]
+        tgt = targets[batch_slice]
         
         v_s = critic(s)
-        critic_loss = F.mse_loss(v_s, target)
+        critic_loss = F.mse_loss(v_s, tgt)
         
         critic.loss.append(critic_loss)
         optimizer_critic.zero_grad()
         critic_loss.backward()
-        max_norm = config.get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=max_norm)
         optimizer_critic.step()
-        scheduler_critic.step()
-
-    # Step 2: compute advantage
-    if is_gae:
-        advantages, _ = compute_gae_adv(critic, states, next_states, rewards, gm, lam)
-    else:
-        advantages, _ = compute_advantage(critic, states, next_states, rewards, mean_cost)
-    # Step 3: update actor
-    # total_batches = (len(states) + batch_size - 1) // batch_size
-    # print(advantages.mean().item(), advantages.std().item(), advantages.min().item(), advantages.max().item())
-    for i in tqdm(range(0, len(states), batch_size), desc="Actor Updates", leave=False):
+        
+        #-----2.Actor Update-----
         h_actor = None
-        batch_slice = slice(i, i + batch_size)
-        s = states[batch_slice]
+
         f = actions[batch_slice]
         logp_old = old_log_probs[batch_slice]
-        adv = advantages[batch_slice].detach()
         adv = (adv - adv.mean()) / (adv.std() + 1e-8) # 归一化adv 稳定计算
         if hasattr(actor, "gru"):
             logits, h_actor = actor(s, h_actor)
@@ -110,10 +125,12 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
         actor.loss.append(actor_loss)
         optimizer_actor.zero_grad()
         actor_loss.backward()
-        max_norm = config.get("max_norm", 1.0)
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=max_norm)
         optimizer_actor.step()
-        scheduler_actor.step()
+        
+        if config["lr_decay"]:
+            scheduler_critic.step()
+            scheduler_actor.step()
 
 def mlp_sample(env, actor, config,  is_random=False):
     """

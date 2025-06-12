@@ -4,6 +4,7 @@ from torch.distributions import Multinomial, Categorical
 from torch.functional import F
 from utils import Normalization, RewardScaling
 import math
+import random
 
 
 
@@ -137,7 +138,11 @@ class HospitalEnv():
         action_prob = F.softmax(logits, dim=-1)  # 计算动作概率
         available_capacity = self.N_j - self.X_j # 注意：这里是基于当前 X_j 的
 
-        for i in range(self.J):
+        # 打乱科室序号, 随机抽取科室进行决策
+        indices = list(range(self.J))
+        random.shuffle(indices)
+
+        for i in range(indices):
             num_patients = self.overflow[i].item() # 获取整数值
             if num_patients <= 0:
                 continue
