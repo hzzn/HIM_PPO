@@ -81,22 +81,17 @@ def main_ppo_training():
 
     optimizer_actor = Adam(learner_actor.parameters(), lr=config.get("actor_lr", 1e-4), eps=config["adam_eps"])
     optimizer_critic = Adam(learner_critic.parameters(), lr=config.get("critic_lr", 1e-4), eps=config["adam_eps"])
-    # 余弦退火
-    # scheduler_actor = CosineAnnealingLR(optimizer_actor, T_max=epochs, eta_min=1e-6)
-    # scheduler_critic = CosineAnnealingLR(optimizer_critic, T_max=epochs, eta_min=1e-6)
-    # 线性降为0
-    total_steps = epochs * math.ceil(num_sampling_actors * Simulation_days * m / batch_size )
-    scheduler_actor = LinearLR(optimizer_actor, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
-    scheduler_critic = LinearLR(optimizer_critic, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
-    
+    if config["lr_decay"]:
+        # 余弦退火
+        # scheduler_actor = CosineAnnealingLR(optimizer_actor, T_max=epochs, eta_min=1e-6)
+        # scheduler_critic = CosineAnnealingLR(optimizer_critic, T_max=epochs, eta_min=1e-6)
+        # 线性降为0
+        total_steps = epochs * math.ceil(num_sampling_actors * Simulation_days * m / batch_size )
+        scheduler_actor = LinearLR(optimizer_actor, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
+        scheduler_critic = LinearLR(optimizer_critic, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
+
     # --- 创建采样 Actors ---
     sampling_actors = [SamplingActor.remote(config, rank=i) for i in range(num_sampling_actors)]
-    
-    # --- 初始权重同步 ---
-    learner_actor_weights_cpu = {k: v.cpu() for k, v in learner_actor.state_dict().items()}
-    ray.get([actor.set_weights.remote(learner_actor_weights_cpu) for actor in sampling_actors])
-
-    # --- 检查采样actor模型设备 (可选调试步骤) ---
     
     # --- 3. 加载检查点 ---
     try:
@@ -108,9 +103,9 @@ def main_ppo_training():
         learner_critic.load_state_dict(checkpoint['crtc_state_dict'])
         optimizer_actor.load_state_dict(checkpoint['optimizer_actor_state_dict'])
         optimizer_critic.load_state_dict(checkpoint['optimizer_critic_state_dict'])
-
-        optimizer_actor.param_groups[0]['lr'] = config.get("actor_lr", 1e-4)
-        optimizer_critic.param_groups[0]['lr'] = config.get("actor_lr", 1e-4)
+        if config["lr_decay"]:
+            scheduler_actor.load_state_dict(checkpoint['scheduler_actor_state_dict'])
+            scheduler_critic.load_state_dict(checkpoint['scheduler_critic_state_dict'])
 
         # 恢复训练步数
         total_update_steps = checkpoint['update_steps']
@@ -126,6 +121,10 @@ def main_ppo_training():
         print(f"Error loading checkpoint: {e}. Starting from scratch.")
         # 处理其他加载错误
         total_update_steps = 0
+    
+    # --- 初始权重同步 ---
+    learner_actor_weights_cpu = {k: v.cpu() for k, v in learner_actor.state_dict().items()}
+    ray.get([actor.set_weights.remote(learner_actor_weights_cpu) for actor in sampling_actors])
 
     for epoch in range(epochs):
 
@@ -180,9 +179,14 @@ def main_ppo_training():
         if config["reward_scaling"] :
             costs = torch.tensor(aggregated_scaled_costs_list, dtype=torch.float)
         memory = (states, actions, old_log_probs, costs, next_states)
+        if config["lr_decay"]:
+            actor_critic = (learner_actor, learner_critic, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic)
+        else:
+            actor_critic = (learner_actor, learner_critic, optimizer_actor, optimizer_critic)
         
         # --- PPO 更新 (在主学习器上) ---
-        ppo_update(learner_actor, learner_critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config)
+        ppo_update(actor_critic, memory, config)
+        
         # scheduler_actor.step()
         # scheduler_critic.step()
 
@@ -214,15 +218,28 @@ def main_ppo_training():
     with open(filepath, 'w') as f:
         json.dump(data_to_save, f, indent=4) # indent=4 使 JSON 文件更易读
 
-    # --- 保存模型检查点 (与原代码类似) ---
-    torch.save({
-        'update_steps': total_update_steps,
-        'act_state_dict': learner_actor.state_dict(),
-        'crtc_state_dict': learner_critic.state_dict(),
-        'optimizer_actor_state_dict': optimizer_actor.state_dict(),
-        'optimizer_critic_state_dict': optimizer_critic.state_dict(), # 原代码误用了optimizer_actor
-    }, CHECKPOINT_PATH)
-    print(f"Checkpoint saved to {CHECKPOINT_PATH}")
+    # --- 保存模型检查点
+
+    if config["lr_decay"]:
+        torch.save({
+            'update_steps': total_update_steps,
+            'act_state_dict': learner_actor.state_dict(),
+            'crtc_state_dict': learner_critic.state_dict(),
+            'optimizer_actor_state_dict': optimizer_actor.state_dict(),
+            'optimizer_critic_state_dict': optimizer_critic.state_dict(),
+            'scheduler_actor_state_dict': scheduler_actor.state_dict(), # Add this
+            'scheduler_critic_state_dict': scheduler_critic.state_dict(), # Add this
+        }, CHECKPOINT_PATH)
+        print(f"Checkpoint saved to {CHECKPOINT_PATH}")
+    else:
+        torch.save({
+            'update_steps': total_update_steps,
+            'act_state_dict': learner_actor.state_dict(),
+            'crtc_state_dict': learner_critic.state_dict(),
+            'optimizer_actor_state_dict': optimizer_actor.state_dict(),
+            'optimizer_critic_state_dict': optimizer_critic.state_dict(),
+        }, CHECKPOINT_PATH)
+        print(f"Checkpoint saved to {CHECKPOINT_PATH}")
 
 
 if __name__ == "__main__":

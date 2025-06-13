@@ -20,7 +20,7 @@ def compute_advantages(critic, states, next_states, rewards, config):
             adv, tgt = compute_advantage(critic, s, next_s, r, config)
             advantanges.append(adv)
             targets.append(tgt)
-        return torch.stack(advantanges), torch.stack(targets)
+        return torch.cat(advantanges, dim=0), torch.cat(targets, dim=0)
     else:
         return compute_advantage(critic, states, next_states, rewards, config)
 
@@ -59,8 +59,12 @@ def compute_gae_adv(critic, states, next_states, rewards, gamma=0.99, lam=0.95):
         target = advantages + values
     return advantages, target
 
-def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic, config):
-    
+def ppo_update(actor_critic, memory, config):
+
+    if config["lr_decay"]:
+        actor, critic, optimizer_actor, optimizer_critic, scheduler_actor, scheduler_critic = actor_critic
+    else:
+        actor, critic, optimizer_actor, optimizer_critic = actor_critic
     # 将所有数据从 CPU 传输到 GPU
     device = next(actor.parameters()).device
     states, actions, old_log_probs, costs, next_states = memory
@@ -77,7 +81,11 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
 
     # 计算优势
     advantages, targets = compute_advantages(critic, states, next_states, rewards, config)
-
+    if config["target_value_normlization"]:
+        mean = targets.mean()
+        std = targets.std()
+        eps = 1e-8
+        targets = (targets - mean) / (std + eps)
     # update
     for i in tqdm(range(0, len(states), batch_size), desc="PPO Update", leave=False):
        
@@ -101,7 +109,8 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
 
         f = actions[batch_slice]
         logp_old = old_log_probs[batch_slice]
-        adv = (adv - adv.mean()) / (adv.std() + 1e-8) # 归一化adv 稳定计算
+        if config["adv_normlization"]:
+            adv = (adv - adv.mean()) / (adv.std() + 1e-8) # 归一化adv 稳定计算
         if hasattr(actor, "gru"):
             logits, h_actor = actor(s, h_actor)
             logits = logits.view_as(f)
@@ -115,8 +124,8 @@ def ppo_update(actor, critic, memory, optimizer_actor, optimizer_critic, schedul
         logp_new = F.log_softmax(logits, dim=-1)
         log_ratio = ((logp_new - logp_old) * f).sum(dim=(1, 2))
         ratio = torch.exp(log_ratio)
-        #print(f"adv range: min={adv.min().item()}, max={adv.max().item()}")
-        #print(f"Ratio range: min={ratio.min().item()}, max={ratio.max().item()}")
+        # print(f"adv range: min={adv.min().item()}, max={adv.max().item()}")
+        # print(f"Ratio range: min={ratio.min().item()}, max={ratio.max().item()}")
         surr1 = ratio * adv        
         surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * adv
         

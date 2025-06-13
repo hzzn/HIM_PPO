@@ -142,7 +142,7 @@ class HospitalEnv():
         indices = list(range(self.J))
         random.shuffle(indices)
 
-        for i in range(indices):
+        for i in indices:
             num_patients = self.overflow[i].item() # 获取整数值
             if num_patients <= 0:
                 continue

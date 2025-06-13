@@ -87,7 +87,7 @@ ENV_CONFIG = {
     # Random seed for reproducibility
 
     # === training parameter ===
-    "Simulation_days": 800,
+    "Simulation_days": 100,
     "num_actor" : 5,
     "num_epoch" : 30,
     "batch_size": 64, 
@@ -97,12 +97,12 @@ ENV_CONFIG = {
     "Gap_Tol": 0.1,
     
     "max_norm" : 0.5,
-    "lam" : 0.95,
+    "lam" : 0.9,
     "gamma" : 0.99, 
     "actor_lr" : 1e-4,
-    "critic_lr" : 1e-4,
+    "critic_lr" : 3e-5,
     "adam_eps" : 1e-5, # 默认1e-8
-    "entropy_coef" : 0.01,
+    "entropy_coef" : 0,
     "actor_input_dim" : 12,
     "actor_hidden_dim" : [64], 
 
@@ -115,4 +115,7 @@ ENV_CONFIG = {
     "normalized_N_j" : False,
     "reward_scaling" : True,
     "orthogonal_init" : True,
+    "lr_decay" : False,
+    "target_value_normlization" : False,
+    "adv_normlization" : True, 
 }
