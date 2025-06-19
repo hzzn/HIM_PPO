@@ -46,7 +46,7 @@ class HospitalEnv():
                                                  dtype=torch.float)  # B_ij: Overflow cost from class i to pool j
         self.reset()
 
-    def reset(self, is_random=False):
+    def reset(self):
         """
         Reset the environment to the beginning of the simulation (day 0, epoch 0).
         """
@@ -54,9 +54,10 @@ class HospitalEnv():
         self.epoch_index_today = 0  # h(t) = 0
         self.normlization = Normalization(shape=(2 * self.J))
         h = 0
-        if is_random:
+        
+        if self.config["is_random"]:
             # self.X_j = torch.cat([torch.randint(2*n//3, n+1, (1,)) for n in self.N_j])
-            self.X_j = torch.tensor([2 * n // 3 for n in self.N_j])
+            self.X_j = torch.tensor([4 * n // 5  for n in self.N_j])
         else:
             self.X_j = torch.zeros(self.num_pools, dtype=torch.int)  # X_j: current number of customers in pool j
         self.Y_j = torch.zeros(self.num_pools, dtype=torch.int)  # Y_j: number of patients to be discharged today in each pool
@@ -65,10 +66,17 @@ class HospitalEnv():
         if self.config["running_mean_std_norm"]:
             X_Y = torch.cat([self.X_j, self.Y_j], dim=0)
             X_Y = self.normlization(X_Y)
-        else:
+        elif["X/N"]:
             X = self.X_j / self.N_j
             Y = self.Y_j / self.N_j
             X_Y = torch.cat([X, Y], dim=0)
+        else:
+            X_Y = torch.cat([X, Y], dim=0)
+            
+        if self.config["queue"]:
+            X_Y = torch.cat([torch.min(self.X_j, self.N_j), torch.clamp(self.X_j - self.N_j, min=0), self.Y_j])
+            # X_Y = self.normlization(X_Y)
+            self.state = torch.cat([X_Y, self.N_j, torch.tensor([h])])
         
         if self.config["normalized_N_j"]:
             X_Y = torch.cat([X_Y, self.normalized_N_j], dim=0)
@@ -76,6 +84,9 @@ class HospitalEnv():
         if self.config["sin_cos_encode"]:
             sin, cos = self.encode_time_feature(h)
             self.state = torch.cat([X_Y, sin, cos, torch.tensor([h])], dim=0).float()
+        elif self.config["position_embedding"]:
+            self.state = self.state.float()
+            self.state += self.get_positional_embeddings(self.epoch_index_today, self.state.size(0))
         else:
             self.state = torch.cat([X_Y, torch.tensor([h])], dim=0).float()
         
@@ -156,10 +167,9 @@ class HospitalEnv():
                 target_idx = target.item() # 获取整数索引
 
                 # 3. 检查容量并分配
-                # 或者，更简单但可能不完美的做法是：如果目标池 *当前* 有空位，就分配
+
                 # 一个更优但复杂的做法是优先分配给有空位的，再处理没空位的
-                
-                # 简化版：检查当前临时容量
+
                 if available_capacity[target_idx] > 0:
                     action[i, target_idx] += 1
                     available_capacity[target_idx] -= 1 # 减少可用容量
@@ -274,7 +284,8 @@ class HospitalEnv():
         if self.config["queue"]:
             X_Y = torch.cat([torch.min(self.X_j, self.N_j), torch.clamp(self.X_j - self.N_j, min=0), self.Y_j])
             # X_Y = self.normlization(X_Y)
-            X_Y = torch.cat([X_Y, self.N_j])
+            self.state = torch.cat([X_Y, self.N_j, torch.tensor([h])])
+        
         if self.config["normalized_N_j"]:
             X_Y = torch.cat([X_Y, self.normalized_N_j], dim=0)
 
@@ -282,6 +293,7 @@ class HospitalEnv():
             sin, cos = self.encode_time_feature(h)
             self.state = torch.cat([X_Y, sin, cos, torch.tensor([h])], dim=0).float()
         elif self.config["position_embedding"]:
+            self.state = self.state.float()
             self.state += self.get_positional_embeddings(self.epoch_index_today, self.state.size(0))
         else:
             self.state = torch.cat([X_Y, torch.tensor([h])], dim=0).float()
@@ -313,9 +325,9 @@ class HospitalEnv():
             # 对i的奇偶性进行判断
             if i % 2 == 0:
                 term = h / 10000 ** (i / d_model)
-                result[h, i] = np.sin(term)
+                result[h] = np.sin(term)
             else:
                 term = h / 10000 ** ((i - 1) / d_model)
-                result[h, i] = np.cos(term)
+                result[h] = np.cos(term)
 
         return result

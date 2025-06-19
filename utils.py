@@ -163,13 +163,13 @@ def mlp_sample(env, actor, config,  is_random=False):
     trajectory = []
 
     reward_scaling = RewardScaling(shape=(1), gamma=config.get("gamma", 0.9))
-    state = env.reset(is_random)  # Tensor, shape = (state_dim,)
+    state = env.reset()  # Tensor, shape = (state_dim,)
     max_days = config["Simulation_days"]
     num_epochs_per_day = config["num_epochs_per_day"]
     total_iters = max_days * num_epochs_per_day
     actor_device = next(actor.parameters()).device
     h_actor = None
-    for i in tqdm(range(total_iters), desc="Sample"):
+    for i in tqdm(range(total_iters), desc="Sample", leave=False):
         state_tensor = state.float().unsqueeze(0).to(actor_device)  # shape: (1, state_dim)
         with torch.no_grad():
             if hasattr(actor, "gru"):

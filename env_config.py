@@ -18,21 +18,21 @@ ENV_CONFIG = {
     # === Patient arrival configuration ===
 
     "arrival_rate_hourly": [ # 参照论文p41-figure 8(a)
-        [0.75]*12 + [0.41]*12,  # pool 0 (GeMed)
-        [0.41]*12 + [0.74]*12,  # pool 1 (Surg)
-        [0.59]*24,              # pool 2 (Ortho)
-        [0.59]*24,              # pool 3 (Card)
-        [0.59]*24               # pool 4 (OtMed)
+        [0.75]*12 + [5/12]*12,  # pool 0 (GeMed)
+        [5/12]*12 + [0.75]*12,  # pool 1 (Surg)
+        [7/12]*24,              # pool 2 (Ortho)
+        [7/12]*24,              # pool 3 (Card)
+        [7/12]*24               # pool 4 (OtMed)
     ],
 
     # === Discharge configuration ===
 
     "discharge_rate_hourly": [ # 参照论文p41-figure 8(b)
-        [0.0]*12 + [0.16]*5 + [0.2] + [0.0]*6,  # pool 0 (GeMed)
-        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 1 (Surg)
-        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 2 (Ortho)
-        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6,   # pool 3 (Card)
-        [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6    # pool 4 (OtMed)
+        [0.0]*12 + [1/6]*6 + [0.0]*6,  # pool 0 (GeMed)
+        [0.0]*6 + [1/12]*12 + [0.0]*6,   # pool 1 (Surg)
+        [0.0]*6 + [1/12]*12 + [0.0]*6,   # pool 2 (Ortho)
+        [0.0]*6 + [1/12]*12 + [0.0]*6,   # pool 3 (Card)
+        [0.0]*6 + [1/12]*12 + [0.0]*6    # pool 4 (OtMed)
     ], 
 
 
@@ -83,43 +83,51 @@ ENV_CONFIG = {
         [1, 2, 2, -1, 0]
     ],
 
+   "is_random": True, 
     # === Simulation control ===
 
     "seed": 42,
     # Random seed for reproducibility
 
     # === training parameter ===
-    "Simulation_days": 100,
+    "Simulation_days": 8000,
     "num_actor" : 5,
-    "num_epoch" : 30,
+    "num_epoch" : 15,
     "batch_size": 64, 
 
-    "Clipping_parameter": 0.3,
+    "Clipping_parameter": 0.2,
 
     "Gap_Tol": 0.1,
     
     "max_norm" : 0.5,
-    "lam" : 0.9,
+    "lam" : 0.95,
     "gamma" : 0.99, 
     "actor_lr" : 1e-4,
     "critic_lr" : 3e-5,
     "adam_eps" : 1e-5, # 默认1e-8
-    "entropy_coef" : 0,
-    "actor_input_dim" : 12,
+    "entropy_coef" : 0.01,
+    "actor_input_dim" : 20,
     "actor_hidden_dim" : [64], 
 
-    "critic_input_dim" : 12,
+    "critic_input_dim" : 20,
     "critic_hidden_dim" : [64],
 
     "is_gae" : True,
-    "running_mean_std_norm" : True, 
-    "sin_cos_encode": True, 
-    "normalized_N_j" : False,
-    "reward_scaling" : True,
+    
+    # 时间编码
+    "sin_cos_encode": False, 
+    "position_embedding": True,
+
     "orthogonal_init" : True,
-    "lr_decay" : False,
+
+    "lr_decay" : True,
+    
+    # 归一化
+    "running_mean_std_norm" : False, 
     "target_value_normlization" : False,
     "adv_normlization" : True, 
     "X/N" : False, 
-    "queue" : False
+    "queue" : True, 
+    "normalized_N_j" : False,
+    "reward_scaling" : True,
 }
