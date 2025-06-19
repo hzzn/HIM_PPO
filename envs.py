@@ -264,17 +264,25 @@ class HospitalEnv():
         if self.config["running_mean_std_norm"]:
             X_Y = torch.cat([self.X_j, self.Y_j], dim=0)
             X_Y = self.normlization(X_Y)
-        else:
+        elif["X/N"]:
             X = self.X_j / self.N_j
             Y = self.Y_j / self.N_j
             X_Y = torch.cat([X, Y], dim=0)
-        
+        else:
+            X_Y = torch.cat([X, Y], dim=0)
+            
+        if self.config["queue"]:
+            X_Y = torch.cat([torch.min(self.X_j, self.N_j), torch.clamp(self.X_j - self.N_j, min=0), self.Y_j])
+            # X_Y = self.normlization(X_Y)
+            X_Y = torch.cat([X_Y, self.N_j])
         if self.config["normalized_N_j"]:
             X_Y = torch.cat([X_Y, self.normalized_N_j], dim=0)
 
         if self.config["sin_cos_encode"]:
             sin, cos = self.encode_time_feature(h)
             self.state = torch.cat([X_Y, sin, cos, torch.tensor([h])], dim=0).float()
+        elif self.config["position_embedding"]:
+            self.state += self.get_positional_embeddings(self.epoch_index_today, self.state.size(0))
         else:
             self.state = torch.cat([X_Y, torch.tensor([h])], dim=0).float()
 
@@ -293,3 +301,21 @@ class HospitalEnv():
         cos_feature = torch.cos(angle)
 
         return sin_feature.unsqueeze(0), cos_feature.unsqueeze(0)
+
+    def get_positional_embeddings(self, h, d_model) -> torch.Tensor:
+
+    # 初始化[N, d_model]矩阵
+        result = torch.ones(d_model)
+
+    # 对pos和i分别遍历
+
+        for i in range(d_model):
+            # 对i的奇偶性进行判断
+            if i % 2 == 0:
+                term = h / 10000 ** (i / d_model)
+                result[h, i] = np.sin(term)
+            else:
+                term = h / 10000 ** ((i - 1) / d_model)
+                result[h, i] = np.cos(term)
+
+        return result

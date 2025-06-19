@@ -35,6 +35,8 @@ ENV_CONFIG = {
         [0.0]*6 + [0.08]*11 + [0.12] + [0.0]*6    # pool 4 (OtMed)
     ], 
 
+
+
     "discharge_rate_daily": [0.25, 0.25, 0.25, 0.25, 0.25], # 床数为315, 日到达率为70, 名义占用率为0.889, 
                                                             # 计算得日出院率应为0.25, 参照论文p23-table 2
 
@@ -118,4 +120,6 @@ ENV_CONFIG = {
     "lr_decay" : False,
     "target_value_normlization" : False,
     "adv_normlization" : True, 
+    "X/N" : False, 
+    "queue" : False
 }
